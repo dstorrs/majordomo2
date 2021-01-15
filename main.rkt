@@ -113,7 +113,7 @@
     ; worker
     (define (start-worker the-task)
       (parameterize ([current-custodian (make-custodian)]
-                     [current-task the-task])
+                     [current-task      the-task])
         (thread
          (thunk
           (with-handlers ([any/c failure])
