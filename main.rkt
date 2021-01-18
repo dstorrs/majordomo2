@@ -89,7 +89,7 @@
                   #:pre               pre
                   #:post              post)
   (define raw-data (task.data the-task))
-  #;(say "finalizing the task. data: " (~v data))
+  #;(say "finalizing the task. raw-data: " (~v raw-data))
 
   (channel-put result-ch
                (set-task-data the-task
@@ -127,6 +127,8 @@
 
   (define result-ch (make-channel))
   (cond [parallel?
+         ; Spawn each argument off into its own task which will run in
+         ; its own thread.
          (define subtask-channels
            (for/list ([arg (in-list args)])
              (add-task-helper jarvis
@@ -136,16 +138,22 @@
                               #:keepalive         keepalive
                               #:retries           retries
                               #:parallel?         #f)))
+
+         ; Collect all the results from the subtasks
          (define raw-data (map (compose task.data sync) subtask-channels))
-         (finalize (task++ #:data raw-data)
-                   result-ch
-                   #:sort-op           sort-op
-                   #:sort-key          sort-key
-                   #:sort-cache-keys?  cache-keys?
-                   #:pre               pre
-                   #:post              post)]
+
+         ; Finalize them in another thread, since finalize uses
+         ; channel-put, which is blocking
+         (thread (thunk (finalize (task++ #:data raw-data)
+                                  result-ch
+                                  #:sort-op           sort-op
+                                  #:sort-key          sort-key
+                                  #:sort-cache-keys?  cache-keys?
+                                  #:pre               pre
+                                  #:post              post)))
+         ; return the result channel
+         result-ch]
         [else
-         (define result-ch (make-channel))
          (add-task-helper jarvis
                           action
                           args
