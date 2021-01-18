@@ -124,14 +124,13 @@
        (list #hash((a . 1)) #hash((a . 4)) #hash((a . 7)) #hash((a . 11)))
        "data on task was sorted with keys and keys were cached"))
 
- ;;----------------------------------------------------------------------
  )
 
 #;
 (test-suite
  "tasks can be automatically parallelized"
 
- (define result (sync (add-task jarvis add1 1 2 3 4 5
+ (define result (sync (add-task (start-majordomo) add1 1 2 3 4 5
                                 #:parallel? #t
                                 #:sort-op <)))
  (is (task.data result)

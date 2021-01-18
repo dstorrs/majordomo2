@@ -1,6 +1,6 @@
 #lang racket/base
 
-;(require handy)
+;(require handy racket/format)
 
 (require racket/contract/base
          racket/contract/region
@@ -103,9 +103,43 @@
         #:post              procedure?)
        #:rest list?
        channel?)
+  (cond [parallel? (raise 'todo)]
+        [else
+         (define result-ch (make-channel))
+         (add-task-helper jarvis
+                          action
+                          args
+                          result-ch
+                          #:keepalive         keepalive
+                          #:retries           retries
+                          #:parallel?         parallel?
+                          #:sort-op           sort-op
+                          #:sort-key          sort-key
+                          #:sort-cache-keys?  cache-keys?
+                          #:pre               pre
+                          #:post              post)]))
 
-  (define result-ch (make-channel))
-  
+
+(define/contract (add-task-helper jarvis action args result-ch
+                                  #:keepalive         [keepalive  5]
+                                  #:retries           [retries    +inf.0]
+                                  #:parallel?         [parallel?  #f]
+                                  #:sort-op           [sort-op    #f]
+                                  #:sort-key          [sort-key   identity]
+                                  #:sort-cache-keys?  [cache-keys? #f]
+                                  #:pre               [pre        identity]
+                                  #:post              [post       identity])
+  (->* (majordomo? (unconstrained-domain-> any/c) list? channel?)
+       (#:keepalive         (and/c real? (not/c negative?))
+        #:retries           (or/c exact-nonnegative-integer? +inf.0)
+        #:parallel?         boolean?
+        #:sort-op           (or/c #f (-> any/c any/c any/c))
+        #:sort-key          (-> any/c any/c)
+        #:sort-cache-keys?  boolean?
+        #:pre               procedure?
+        #:post              procedure?)
+       channel?)
+
   (parameterize ([current-custodian (majordomo.cust jarvis)])
     (match-define (and the-task (struct* task ([manager-ch manager-ch])))
       (task++))
@@ -127,16 +161,16 @@
     (thread
      (thunk
       (define (finalize the-task)
-        (define data (task.data the-task))
+        (define raw-data (task.data the-task))
         #;(say "finalizing the task. data: " (~v data))
 
         (channel-put result-ch
                      (set-task-data the-task
                                     (post
-                                     (let ([data (pre data)])
-                                       #;(say "data after pre is: " (~v data))
-                                       (cond [sort-op (sort data         sort-op
-                                                            #:key        sort-key
+                                     (let ([data (pre raw-data)])
+                                       #;(say "raw-data after pre is: " (~v raw-data))
+                                       (cond [sort-op (sort data          sort-op
+                                                            #:key         sort-key
                                                             #:cache-keys? cache-keys?)]
                                              [else    data]))))))
 
@@ -168,8 +202,9 @@
            #;(say "no retry. value: " value)
            (kill-thread worker)
            (finalize (set-task-status the-task 'timeout))])))))
-
   result-ch)
+
+
 
 
 ;; ;; ; task
