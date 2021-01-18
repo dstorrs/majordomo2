@@ -82,6 +82,27 @@
 
 ;;----------------------------------------------------------------------
 
+(define (finalize the-task result-ch
+                  #:sort-op           sort-op
+                  #:sort-key          sort-key
+                  #:sort-cache-keys?  cache-keys?
+                  #:pre               pre
+                  #:post              post)
+  (define raw-data (task.data the-task))
+  #;(say "finalizing the task. data: " (~v data))
+
+  (channel-put result-ch
+               (set-task-data the-task
+                              (post
+                               (let ([data (pre raw-data)])
+                                 #;(say "raw-data after pre is: " (~v raw-data))
+                                 (cond [sort-op (sort data          sort-op
+                                                      #:key         sort-key
+                                                      #:cache-keys? cache-keys?)]
+                                       [else    data]))))))
+
+;;----------------------------------------------------------------------
+
 (define/contract (add-task jarvis action
                            #:keepalive         [keepalive  5]
                            #:retries           [retries    +inf.0]
@@ -103,7 +124,26 @@
         #:post              procedure?)
        #:rest list?
        channel?)
-  (cond [parallel? (raise 'todo)]
+
+  (define result-ch (make-channel))
+  (cond [parallel?
+         (define subtask-channels
+           (for/list ([arg (in-list args)])
+             (add-task-helper jarvis
+                              action
+                              (list arg)
+                              (make-channel)
+                              #:keepalive         keepalive
+                              #:retries           retries
+                              #:parallel?         #f)))
+         (define raw-data (map (compose task.data sync) subtask-channels))
+         (finalize (task++ #:data raw-data)
+                   result-ch
+                   #:sort-op           sort-op
+                   #:sort-key          sort-key
+                   #:sort-cache-keys?  cache-keys?
+                   #:pre               pre
+                   #:post              post)]
         [else
          (define result-ch (make-channel))
          (add-task-helper jarvis
@@ -160,20 +200,6 @@
     ; manager
     (thread
      (thunk
-      (define (finalize the-task)
-        (define raw-data (task.data the-task))
-        #;(say "finalizing the task. data: " (~v data))
-
-        (channel-put result-ch
-                     (set-task-data the-task
-                                    (post
-                                     (let ([data (pre raw-data)])
-                                       #;(say "raw-data after pre is: " (~v raw-data))
-                                       (cond [sort-op (sort data          sort-op
-                                                            #:key         sort-key
-                                                            #:cache-keys? cache-keys?)]
-                                             [else    data]))))))
-
       (let loop ([retries  retries]
                  [the-task the-task]
                  [worker   worker])
@@ -188,7 +214,12 @@
           ;
           [(list result the-task)
            #;(say "result: " result ", task: " (~v task))
-           (finalize (set-task-status the-task result))]
+           (finalize (set-task-status the-task result) result-ch
+                     #:sort-op           sort-op
+                     #:sort-key          sort-key
+                     #:sort-cache-keys?  cache-keys?
+                     #:pre               pre
+                     #:post              post)]
           ;
           [(and value (or (== worker) #f))
            #:when (>= retries 0) ; timeout or thread died, can be retried
@@ -201,7 +232,12 @@
           [(and value (or (== worker) #f)) ; timeout or thread died, no retries left
            #;(say "no retry. value: " value)
            (kill-thread worker)
-           (finalize (set-task-status the-task 'timeout))])))))
+           (finalize (set-task-status the-task 'timeout) result-ch
+                     #:sort-op           sort-op
+                     #:sort-key          sort-key
+                     #:sort-cache-keys?  cache-keys?
+                     #:pre               pre
+                     #:post              post)])))))
   result-ch)
 
 
