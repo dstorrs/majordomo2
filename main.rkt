@@ -1,7 +1,5 @@
 #lang racket/base
 
-;(require handy racket/format)
-
 (require racket/contract/base
          racket/contract/region
          racket/function
@@ -89,13 +87,11 @@
                   #:pre               pre
                   #:post              post)
   (define raw-data (task.data the-task))
-  #;(say "finalizing the task. raw-data: " (~v raw-data))
 
   (channel-put result-ch
                (set-task-data the-task
                               (post
                                (let ([data (pre raw-data)])
-                                 #;(say "raw-data after pre is: " (~v raw-data))
                                  (cond [sort-op (sort data          sort-op
                                                       #:key         sort-key
                                                       #:cache-keys? cache-keys?)]
@@ -213,15 +209,12 @@
                  [worker   worker])
         (match (sync/timeout keepalive manager-ch worker)
           ['keepalive
-           #;(say "keepalive")
            (loop retries the-task worker)]
           ;
           [(list 'update-data data)
-           #;(say "update: " data)
            (loop retries (set-task-data the-task data) worker)]
           ;
           [(list result the-task)
-           #;(say "result: " result ", task: " (~v task))
            (finalize (set-task-status the-task result) result-ch
                      #:sort-op           sort-op
                      #:sort-key          sort-key
@@ -230,15 +223,13 @@
                      #:post              post)]
           ;
           [(and value (or (== worker) #f))
-           #:when (>= retries 0) ; timeout or thread died, can be retried
-           #;(say "retry. value: " value)
+           #:when (> retries 0) ; timeout or thread died, can be retried
            (kill-thread worker)
            (loop (sub1 retries)
                  the-task
                  (start-worker the-task))]
           ;
           [(and value (or (== worker) #f)) ; timeout or thread died, no retries left
-           #;(say "no retry. value: " value)
            (kill-thread worker)
            (finalize (set-task-status the-task 'timeout) result-ch
                      #:sort-op           sort-op
