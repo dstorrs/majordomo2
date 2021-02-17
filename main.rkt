@@ -6,15 +6,19 @@
          racket/match
          struct-plus-plus)
 
-(provide current-task
+(provide start-majordomo
+         stop-majordomo
+         majordomo?
+         majordomo.id
+
+         current-task
          task++  task
          task.id       task-id
          task.status   task-status
          task.data     task-data
          task?
-         start-majordomo
-         stop-majordomo
-         majordomo?
+         task-status/c
+
          update-data
          keepalive
          success
@@ -27,9 +31,10 @@
           ([(id    (gensym "majordomo-"))  symbol?] ; makes it human-identifiable
            [(cust  (make-custodian))       custodian?]))
 
+(define task-status/c (or/c 'success 'failure 'unspecified 'timeout))
 (struct++ task
           ([(id (gensym "task-"))       symbol?]
-           [(status 'unspecified)       (or/c 'success 'failure 'unspecified 'timeout)]
+           [(status 'unspecified)       task-status/c]
            [(data (hash))               any/c]
            ; private fields
            [(manager-ch (make-channel)) channel?]))
@@ -101,7 +106,7 @@
 
 (define/contract (add-task jarvis action
                            #:keepalive         [keepalive  5]
-                           #:retries           [retries    +inf.0]
+                           #:retries           [retries    3]
                            #:parallel?         [parallel?  #f]
                            #:sort-op           [sort-op    #f]
                            #:sort-key          [sort-key   identity]
@@ -111,7 +116,7 @@
                            . args)
   (->* (majordomo? (unconstrained-domain-> any/c))
        (#:keepalive         (and/c real? (not/c negative?))
-        #:retries           (or/c exact-nonnegative-integer? +inf.0)
+        #:retries           (or/c natural-number/c +inf.0)
         #:parallel?         boolean?
         #:sort-op           (or/c #f (-> any/c any/c any/c))
         #:sort-key          (-> any/c any/c)
@@ -166,7 +171,7 @@
 
 (define/contract (add-task-helper jarvis action args result-ch
                                   #:keepalive         [keepalive  5]
-                                  #:retries           [retries    +inf.0]
+                                  #:retries           [retries    3]
                                   #:parallel?         [parallel?  #f]
                                   #:sort-op           [sort-op    #f]
                                   #:sort-key          [sort-key   identity]
@@ -238,52 +243,3 @@
                      #:pre               pre
                      #:post              post)])))))
   result-ch)
-
-
-
-
-;; ;; ; task
-;; ;; ;   - id
-;; ;; ;   - parallel?
-;; ;; ;   - results-ch
-;; ;; ;
-;; ;; ; - start a task
-;; ;; ; - make it easy to parallelize
-;; ;; ;    - combine the results of parallel procs
-;; ;; ; - be able to get the results back from the task
-;; ;; ; - have the manager restart tasks if they fail
-;; ;; ; - retain state across retries
-;; ;; ; - shutting down the manager cleanly shuts down all tasks
-
-;; ;; (define jarvis (start-majordomo))
-
-;; ;; ; This is all you need.  It will run in a thread with a manager thread
-;; ;; ; keeping an eye on the thread to restart it if it dies.
-;; ;; (add-task jarvis check-filesystem)
-
-;; ;; ; This will try up to 5 times to ping a collaborator
-;; ;; (add-task jarvis ping '(bob) #:retries 5)
-
-;; ;; ; This will download things in parallel.  There is no feedback about
-;; ;; ; the results.
-;; ;; (add-task jarvis download '("page1.html" "page2.html" "page3.html") #:parallel #t)
-
-;; ;; ; This will return the results in no particular order
-;; ;; (define task (add-task jarvis get-user-profiles '(alice bob fred) #:parallel #t))
-;; ;; (println (sync (task.results-ch task)))
-
-;; ;; ; This will sort the results before returning them
-;; ;; (define task (add-task jarvis get-user-profiles
-;; ;;                        '(alice bob fred)
-;; ;;                        #:parallel #t
-;; ;;                        #:sort-op symbol<?
-;; ;;                        #:sort-key (curryr hash-ref 'name)))
-;; ;; (println (sync (task.results-ch task)))
-
-
-;; ;; ; This will post-process the results before returning them
-;; ;; (define task (add-task jarvis get-user-profiles
-;; ;;                        '(alice bob fred)
-;; ;;                        #:parallel #t
-;; ;;                        #:post (λ (lst) (map (curryr hash-set 'processed (current-seconds))))))
-;; ;; (println (sync (task.results-ch task)))
