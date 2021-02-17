@@ -48,4 +48,6 @@ temp.html
 test.rkt
 compiled/
 node_modules/
-
+*.html
+*.css
+*.js
