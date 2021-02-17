@@ -75,6 +75,7 @@ The provided functions and data types are defined in the @secref["API"] section,
 	  (stop-majordomo jarvis)
 	  ]
 
+
 @subsection{Sorting Task Results}
 
 @examples[
@@ -140,6 +141,7 @@ The provided functions and data types are defined in the @secref["API"] section,
 	  (stop-majordomo jarvis)
 	  ]
 
+
 @subsection{Pre- and Post-Processing}
 
 @examples[
@@ -152,7 +154,7 @@ The provided functions and data types are defined in the @secref["API"] section,
 
           @#reader scribble/comment-reader
           (pretty-print
-           ; This is contrived and overly fancy example, but it demonstrates the
+           ; This is a contrived and overly fancy example, but it demonstrates the
            ; functionality.  We'll generate the strings, append some text to the end after
            ; they've been generated, sort the strings by their length, and then put it all
            ; into titlecase.
@@ -172,7 +174,10 @@ The provided functions and data types are defined in the @secref["API"] section,
 	  ]
 
 
+
 @subsection{Restarting}
+
+When a task fails, either because it threw an error or simply timed out, it will be restarted if there are retries left.  By default there will be 3 retries (meaning a total of 4 attempts to run the task), but you can use the @racket[#:retries] keyword to specify how many you want.  The argument must be a natural number or @racket[+inf.0].
 
 @examples[
           #:eval eval
@@ -183,12 +188,14 @@ The provided functions and data types are defined in the @secref["API"] section,
           (define jarvis (start-majordomo))
 
           (define (failing-func)
-            (raise-arguments-error 'failing-func "Fake error"))
+            (displayln "inside failing-func")
+            (raise-arguments-error 'failing-func "I don't feel so good"))
 
           @#reader scribble/comment-reader
 	  (pretty-print
            ; If a function raises an error then the result will contain the value raised.
-           ; We need to set #:retries to a finite number or it will restart indefinitely.
+           ; By default it will restart 3 times, but in this example we don't want it to
+           ; restart at all so we will specify 0 retries.
            (format "Data after failure was: ~v"
                    (task.data (sync (add-task jarvis failing-func #:retries 0)))))
 
@@ -196,22 +203,24 @@ The provided functions and data types are defined in the @secref["API"] section,
           @#reader scribble/comment-reader
           (define (func-times-out . args)
             ; Sometimes an action will time out without explicitly throwing an error.  If
-            ; so, it will be restarted again with all of its original arguments. (Assuming
-            ; it has retries left.)  We can use the 'data' value in (current-task) to
-            ; carry state across the restart.
+            ; so then if it has retries left it will be restarted again with all of its
+            ; original arguments.  We can use the 'data' value in (current-task) to carry
+            ; state across the restart.
             (define state (task.data (current-task)))
-            (define data
-              (if (hash-empty? state)
-                  (begin (displayln "Initial start.  Hello!") args)
-                  (begin (displayln "restarting...")          remaining)))
-            (match data
-              ['() (success)]
-              [(list current remaining ...)
+            (match state
+              [(? hash-empty?)
+               (displayln "Initial start.  Hello!")
+               (update-data (hash-set* state
+                                       'remaining-args args
+                                       'results '()))
+               (displayln "Intentional timeout to demonstrate restart.")
+               (sync never-evt)]
+              [(hash-table ('remaining-args (list current remaining ...)))
+               (displayln (format "Marking ~a as processed..." current))
                (update-data (hash-set* state
                                        'remaining-args remaining
-                                       'results (cons (add1 current)
+                                       'results (cons current
                                                       (hash-ref state 'results '()))))
-               (displayln (format "Processing ~a..." current))
                (displayln "Intentional timeout to demonstrate restart.")
                (sync never-evt)])
             (displayln "Goodbye."))
@@ -220,37 +229,45 @@ The provided functions and data types are defined in the @secref["API"] section,
           @#reader scribble/comment-reader
           (let ([result (sync (add-task jarvis func-times-out 1 2 3 4 5 6
                                         #:keepalive 0.1 ; max time to complete/keepalive
-                                        #:retries   3
                                         #:post (λ (h)
                                                  (hash-set h
-                                                           'results (reverse (hash-ref h 'results '()))))
-                                        ))])
-            ; Be sure to use struct* in your match pattern instead of struct.  The task
-            ; struct contains private fields that are not documented or provided.
+                                                           'results (reverse (hash-ref h 'results '()))))))])
+            ; Be sure to use struct* in your match pattern instead of struct.  The
+	    ; task struct contains private fields that are not documented
+	    ; or provided. Use the @racketmodname[struct-plus-plus] reflection API if you
+	    ; really need to dig out the full field list.
             (match-define (struct* task ([status status] [data data])) result)
-            (displayln (format "Final result was: ~v" data))
-            (displayln (format "Final status was: ~v" status)))
+            (displayln (format "Final status was: ~v" status))
+            (displayln (format "Final data was: ~v" data))
+)
 
           @#reader scribble/comment-reader
           (define (long-running-task)
             ; If a task is going to take a long time, it can periodically send a keepalive
-            ; so that the manager knows not to restart it.
+            ; so that the manager knows not to restart it.  You can use @racket[update-data],
+            ; @racket[success], @racket[failure], or @racket[keepalive] for that.
             (for ([i 10])
               (sleep 0.1)
               (keepalive))
             (success 'finished))
 
-          (let ([result (sync (add-task jarvis long-running-task #:keepalive 0.25))])
+          @#reader scribble/comment-reader
+          (let ([result (sync (add-task jarvis long-running-task #:retries 0 #:keepalive 0.25))])
+            ; In this case we are saying that the task has failed if the manager doesn't
+            ; hear from it after 0.25 seconds.
             (displayln (format "Final status of long-running task was: ~v" (task.status result)))
-            (displayln (format "Final data of long-running task was: ~v" (task.data result)))
-            )
+            (displayln (format "Final data of long-running task was: ~v" (task.data result))))
 
+          @#reader scribble/comment-reader
+          (let ([result (sync (add-task jarvis long-running-task #:retries 0 #:keepalive 0.05))])
+            ; Here we let the task timeout.
+            (displayln (format "Final status of long-running task was: ~v" (task.status result)))
+            (displayln (format "Final data of long-running task was: ~v" (task.data result))))
 
 	  (stop-majordomo jarvis)
 	  ]
 
-
-@subsection[#:tag "running-in-parallel"]{Parallelized Example}
+@subsection[#:tag "running-in-parallel"]{Parallelization}
 
 @examples[
           #:eval eval
@@ -262,12 +279,21 @@ The provided functions and data types are defined in the @secref["API"] section,
 
           @#reader scribble/comment-reader
           (pretty-print
+           ; Run the task in series to start with in order to show the baseline data.  (We
+           ; already did this in a previous section but it's useful to repeat it here.)
+           ; Note that the task ID is the same throughout.
+           (task.data (sync (add-task jarvis mock-network-function
+                                      "4.4.4.4" "8.8.8.8" "172.67.188.90" "104.21.48.235"))))
+
+          @#reader scribble/comment-reader
+          (pretty-print
            ; Parallelize the task such that each argument in the list is farmed out to a
            ; separate sub task and the results are compiled back together. NB: Because of
            ; how mock-network-function is defined, this results in an extra layer of
            ; listing, as we're getting multiple lists each containing the results of
            ; processing a single argument instead of one list containing the results of
-           ; processing each argument in turn.  See below for how to handle this.
+           ; processing each argument in turn.  See below for how to handle this.  Note
+           ; that the task ID is different for each entry.
            (task.data (sync (add-task jarvis mock-network-function
                                       #:parallel? #t
                                       "4.4.4.4" "8.8.8.8" "172.67.188.90" "104.21.48.235"))))
@@ -275,16 +301,17 @@ The provided functions and data types are defined in the @secref["API"] section,
           @#reader scribble/comment-reader
           (pretty-print
            ; Same as above, but we'll append the sublists together in order to get back to
-           ; the original results.
+           ; the original results.  Note that once again the task ID is different for each
+           ; entry.
            (task.data (sync (add-task jarvis mock-network-function
                                       #:parallel? #t
                                       #:post (curry apply append)
                                       "4.4.4.4" "8.8.8.8" "172.67.188.90" "104.21.48.235"))))
 
 
-
 	  (stop-majordomo jarvis)
           ]
+
 
 
 
@@ -371,7 +398,7 @@ Tasks are created inside, and managed by, a @racket[majordomo] instance.
                    [action (unconstrained-domain-> any/c)]
                    [arg                any/c] ...
                    [#:keepalive        keepalive-time   (and/c real? (not/c negative?)) 5]
-                   [#:retries          retries          (or/c exact-nonnegative-integer? +inf.0) +inf.0]
+                   [#:retries          retries          (or/c natural-number/c +inf.0) 3]
                    [#:parallel?        parallel?        boolean? #f]
                    [#:sort-op          sort-op          (or/c #f (-> any/c any/c any/c)) #f]
                    [#:sort-key         sort-key         (-> any/c any/c) identity]
@@ -396,7 +423,7 @@ Tasks are created inside, and managed by, a @racket[majordomo] instance.
 
                        @racketid[keepalive-time] The duration within which the worker must either terminate or notify the manager that it's still running.
 
-                       @racketid[retries] The number of times that the manager should restart the worker before giving up.
+                       @racketid[retries] The number of times that the manager should restart the worker before giving up.  (Note:  This counts @italic{retries}, not maximum attempts.  The maximum number of times your action will attempt to run is retries + 1, with the +1 being the initial attempt.)
 
                        @racketid[parallel?] Whether the action should be run in parallel. See @secref["parallel-processing"].
 
