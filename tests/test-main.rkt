@@ -1,8 +1,7 @@
 #lang racket/base
-
+;(require handy/utils racket/format) ; debug
 (require handy/test-more
          handy/try
-;         handy/utils
          racket/function
          "../main.rkt")
 
