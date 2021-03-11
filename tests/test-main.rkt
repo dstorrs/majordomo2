@@ -136,7 +136,6 @@
                                 #:sort-op <)))
  (is (task.data result)
      '(2 3 4 5 6)
-     "Successfully parallelized")
- 
- 
+     "Successfully parallelized"))
+
  )
