@@ -168,13 +168,14 @@
              '(1 2 3)
              "(add-task jarvis + 1 2 3 #:parallel? #t) returns '(1 2 3")
 
-         (is-type (first (task.data (sync (add-task jarvis + '(1 2 3) #:parallel? #t))))
+         (define args '(1 2 3))
+         (is-type (first (task.data (sync (add-task jarvis + args #:parallel? #t))))
                   exn:fail:contract?
                   "(add-task jarvis + '(1 2 3) #:parallel? #t) blows up, as expected")
 
-         (is (task.data (sync (add-task jarvis + '(1 2 3) #:parallel? #t #:unwrap? #t)))
+         (is (task.data (sync (add-task jarvis + args #:parallel? #t #:unwrap? #t)))
              '(1 2 3)
-             "(add-task jarvis + '(1 2 3) #:parallel? #t #:unwrap? #t) correctly returns '(1 2 3)"))
+             "(add-task jarvis + '(1 2 3) #:parallel? #t #:unwrap? #t) correctly returns '(1 2 3)"))       
        ]
       [finally (stop-majordomo jarvis)])
  )
@@ -223,7 +224,6 @@
        (let ([result (sync (add-task (start-majordomo) result-false #:retries 0))])
          (ok #t "if you don't specify a filter it's fine if data is not a list"))
 
-       (displayln "entering the 'should throw' task")
        (is-type (task.data (sync (add-task (start-majordomo)
                                            result-false
                                            #:filter  (and/c number? even?)

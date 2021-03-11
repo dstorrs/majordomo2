@@ -11,6 +11,7 @@
          stop-majordomo
          majordomo?
          majordomo.id
+         majordomo-id
 
          current-task
          task++  task
