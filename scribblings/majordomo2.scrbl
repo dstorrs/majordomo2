@@ -27,7 +27,7 @@ Major features include:
 
 @section{Demonstration}
 
-The provided functions and data types are defined in the @secref["API"] section, but here are examples of practical usage. 
+The provided functions and data types are defined in the @secref["API"] section, but here are examples of practical usage.
 
 @subsection{Simple Example}
 
@@ -174,6 +174,37 @@ The provided functions and data types are defined in the @secref["API"] section,
 	  ]
 
 
+@subsection{Filtering Task Results}
+
+If you're going to use pre/post processing and/or sorting, it's a good idea to ensure that all elements in your data set are appropriate.  To make this easy you can filter the results before anything else happens in order to get rid of bad results.
+
+@examples[
+          #:eval eval
+          #:label #f
+
+	  (require majordomo2)
+
+          (define jarvis (start-majordomo))
+
+          (define (simple)
+            (update-data  '(1 2 3 4 5 6 #f 'error))
+            (success))
+
+          @#reader scribble/comment-reader
+          ;  Filtering the results happens before pre-processing
+          (define result (sync (add-task jarvis
+                                         simple
+                                         #:filter  (and/c number? even?)
+                                         #:pre     (λ (lst)
+                                                     (if (memf odd? lst)
+                                                         (raise 'failed)
+                                                         lst))
+                                         #:sort-op >)))
+          (task.data result)
+
+	  (stop-majordomo jarvis)
+	  ]
+
 
 @subsection{Restarting}
 
@@ -239,7 +270,7 @@ When a task fails, either because it threw an error or simply timed out, it will
             (match-define (struct* task ([status status] [data data])) result)
             (displayln (format "Final status was: ~v" status))
             (displayln (format "Final data was: ~v" data))
-)
+            )
 
           @#reader scribble/comment-reader
           (define (long-running-task)

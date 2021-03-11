@@ -2,8 +2,12 @@
 ;(require handy/utils racket/format) ; debug
 (require handy/test-more
          handy/try
+         racket/contract/base
          racket/function
+         racket/list
          "../main.rkt")
+
+(expect-n-tests 38)
 
 (test-suite
  "majordomo"
@@ -138,4 +142,96 @@
      '(2 3 4 5 6)
      "Successfully parallelized"))
 
+(test-suite
+ "tasks can receive a list instead of separate args if desired"
+
+ (define jarvis (start-majordomo))
+ (try [
+       (define (foo a b c)
+         (+ a b c))
+
+       (let ()
+         (define result (task.data (sync (add-task jarvis foo 1 2 3))))
+         (is result 6 "(add-task jarvis foo 1 2 3) works"))
+
+
+       (let ()
+         (define result (task.data (sync (add-task jarvis foo '(1 2 3)))))
+         (is-type result exn:fail:contract? "(foo) dies when you pass it a list instead of separate args"))
+
+       (let ()
+         (define result (task.data (sync (add-task jarvis foo '(1 2 3) #:unwrap? #t))))
+         (is result 6 "(foo) works when you pass it a list instead of separate args but you use #:unwrap? #t")
+         )
+       (let ()
+         (is (task.data (sync (add-task jarvis + 1 2 3 #:parallel? #t)))
+             '(1 2 3)
+             "(add-task jarvis + 1 2 3 #:parallel? #t) returns '(1 2 3")
+
+         (is-type (first (task.data (sync (add-task jarvis + '(1 2 3) #:parallel? #t))))
+                  exn:fail:contract?
+                  "(add-task jarvis + '(1 2 3) #:parallel? #t) blows up, as expected")
+
+         (is (task.data (sync (add-task jarvis + '(1 2 3) #:parallel? #t #:unwrap? #t)))
+             '(1 2 3)
+             "(add-task jarvis + '(1 2 3) #:parallel? #t #:unwrap? #t) correctly returns '(1 2 3)"))
+       ]
+      [finally (stop-majordomo jarvis)])
  )
+
+(test-suite
+ "results can be filtered before processing"
+
+ (try [
+       (define (simple)
+         (update-data  '(1 2 3 4 5 6 #f "FAILED"))
+         (success))
+
+       ;  Filtering the results happens before pre-processing
+       (let  ([result (sync (add-task (start-majordomo)
+                                      simple
+                                      #:filter  (and/c number? even?)
+                                      #:retries 0
+                                      #:pre     (λ (lst)
+                                                  (if (memf odd? lst)
+                                                      (raise 'failed)
+                                                      lst))
+                                      #:sort-op >))])
+         (is (task.data result)
+             '(6 4 2)
+             "Successfully filtered results"))
+
+       (define (result-null)
+         (update-data  '())
+         (success))
+       (let  ([result (sync (add-task (start-majordomo)
+                                      result-null
+                                      #:filter  (and/c number? even?)
+                                      #:retries 0
+                                      #:pre     (λ (lst)
+                                                  (if (memf odd? lst)
+                                                      (raise 'failed)
+                                                      lst))
+                                      #:sort-op >))])
+         (is (task.data result)
+             '()
+             "Successfully filtered a null list"))
+
+       (define (result-false)
+         (update-data  #f)
+         (success))
+       (let ([result (sync (add-task (start-majordomo) result-false #:retries 0))])
+         (ok #t "if you don't specify a filter it's fine if data is not a list"))
+
+       (displayln "entering the 'should throw' task")
+       (is-type (task.data (sync (add-task (start-majordomo)
+                                           result-false
+                                           #:filter  (and/c number? even?)
+                                           #:retries 0)))
+                exn:fail:contract?
+                "fails if you try to filter something that isn't a list")
+
+       ]
+      [catch (any/c (λ (e)
+                      (display "failed to filter. Result:") (print e)
+                      (ok #f "failed!  did not manage to filter results before preprocess")))]))
