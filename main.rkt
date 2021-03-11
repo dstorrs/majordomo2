@@ -33,9 +33,9 @@
 
 (define task-status/c (or/c 'success 'failure 'unspecified 'timeout))
 (struct++ task
-          ([(id (gensym "task-"))       symbol?]
+          ([(id     (gensym "task-"))   symbol?]
            [(status 'unspecified)       task-status/c]
-           [(data (hash))               any/c]
+           [(data   (hash))             any/c]
            ; private fields
            [(manager-ch (make-channel)) channel?]))
 
