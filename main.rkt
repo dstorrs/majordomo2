@@ -25,8 +25,10 @@
          keepalive
          success
          failure
+
          add-task
          from-task
+         get-task-data
          )
 
 (define-logger md)
@@ -119,7 +121,7 @@
       #:sort-cache-keys?  boolean?
       #:post              procedure?
       any)
-  
+
   (log-md-debug "~a: entering finalize" (thread-id))
   (define raw-data (task.data the-task))
 
@@ -331,3 +333,43 @@
 (define/contract (from-task m val)
   (-> majordomo? any/c channel?)
   (add-task m identity val))
+
+;;----------------------------------------------------------------------
+
+(define/contract (get-task-data jarvis action
+                                #:keepalive         [keepalive   5]
+                                #:retries           [retries     3]
+                                #:parallel?         [parallel?   #f]
+                                #:unwrap?           [unwrap?     #f]
+                                #:filter            [filter-func #f]
+                                #:pre               [pre         identity]
+                                #:sort-op           [sort-op     #f]
+                                #:sort-key          [sort-key    identity]
+                                #:sort-cache-keys?  [cache-keys? #f]
+                                #:post              [post       identity]
+                                . args)
+  (->* (majordomo? (unconstrained-domain-> any/c))
+       (#:keepalive         (and/c real? (not/c negative?))
+        #:retries           (or/c natural-number/c +inf.0)
+        #:parallel?         boolean?
+        #:unwrap?            boolean?
+        #:filter            (or/c #f procedure?)
+        #:pre               procedure?
+        #:sort-op           (or/c #f (-> any/c any/c any/c))
+        #:sort-key          (-> any/c any/c)
+        #:sort-cache-keys?  boolean?
+        #:post              procedure?)
+       #:rest list?
+       any/c)
+  (task.data (sync (apply (curry add-task jarvis action
+                                 #:keepalive         keepalive
+                                 #:retries           retries
+                                 #:parallel?         parallel?
+                                 #:unwrap?           unwrap?
+                                 #:filter            filter-func
+                                 #:pre               pre
+                                 #:sort-op           sort-op
+                                 #:sort-key          sort-key
+                                 #:sort-cache-keys?  cache-keys?
+                                 #:post              post)
+                          args))))

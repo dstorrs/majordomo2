@@ -175,7 +175,7 @@
 
          (is (task.data (sync (add-task jarvis + args #:parallel? #t #:unwrap? #t)))
              '(1 2 3)
-             "(add-task jarvis + '(1 2 3) #:parallel? #t #:unwrap? #t) correctly returns '(1 2 3)"))       
+             "(add-task jarvis + '(1 2 3) #:parallel? #t #:unwrap? #t) correctly returns '(1 2 3)"))
        ]
       [finally (stop-majordomo jarvis)])
  )
@@ -242,4 +242,17 @@
 
  (define result (from-task jarvis 7))
  (is-type result channel? "from-task returns a channel, as expected")
- (is (task.data (sync result)) 7 "the channel returned the specified value"))
+ (is (task.data (sync result)) 7 "the channel returned the specified value")
+ (stop-majordomo jarvis)
+ )
+
+(test-suite
+ "get-task-result"
+
+ (define jarvis (start-majordomo))
+ (is (get-task-data jarvis identity 7)
+     7
+     "get-task-result returns the value without having to explicitly sync and task.data")
+
+ (stop-majordomo jarvis)
+ )
