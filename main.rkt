@@ -100,13 +100,26 @@
 
 ;;----------------------------------------------------------------------
 
-(define (finalize the-task result-ch
-                  #:sort-op           sort-op
-                  #:sort-key          sort-key
-                  #:sort-cache-keys?  cache-keys?
-                  #:filter            filter-func
-                  #:pre               pre
-                  #:post              post)
+; Once an action has been completed, the manager will call finalize.  finalize is
+; responsible for filtering, preprocessing, sorting, and postprocessing the data stored in
+; (current-task) and then doing a channel-put on the result-ch arg in order to make the
+; value available to the customer.
+(define/contract (finalize the-task result-ch
+                           #:sort-op           sort-op
+                           #:sort-key          sort-key
+                           #:sort-cache-keys?  cache-keys?
+                           #:filter            filter-func
+                           #:pre               pre
+                           #:post              post)
+  (-> task? channel?
+      #:filter            (or/c #f procedure?)
+      #:pre               procedure?
+      #:sort-op           (or/c #f (-> any/c any/c any/c))
+      #:sort-key          (-> any/c any/c)
+      #:sort-cache-keys?  boolean?
+      #:post              procedure?
+      any)
+  
   (log-md-debug "~a: entering finalize" (thread-id))
   (define raw-data (task.data the-task))
 
