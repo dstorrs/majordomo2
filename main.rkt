@@ -124,7 +124,8 @@
          [#f raw-data]
          [_  (filter filter-func raw-data)]))
 
-     (log-md-debug "~a: filtered data is: ~v" (thread-id) filtered-data)
+     (log-md-debug "~a: putting results on result-ch. filtered data is: ~v"
+                   (thread-id) filtered-data)
 
      (channel-put result-ch
                   (set-task-data the-task
@@ -166,8 +167,7 @@
 
   (define result-ch (make-channel))
   (cond [parallel?
-         ; Spawn each argument off into its own task which will run in
-         ; its own thread.
+         ; Spawn each argument off into its own task which will run in its own thread.
 
          ;  NOTE: In some cases it will be easier for the customer to pass args as a list
          ;  instead of as separate arguments, for example when the args are generated via
@@ -185,8 +185,8 @@
          ; Collect all the results from the subtasks
          (define raw-data (map (compose task.data sync) subtask-channels))
 
-         ; Finalize them in another thread, since finalize uses
-         ; channel-put, which is blocking
+         ; Finalize them in another thread, since finalize uses channel-put, which is
+         ; blocking.
          (thread-with-id (thunk (finalize (task++ #:data raw-data)
                                           result-ch
                                           #:sort-op           sort-op
