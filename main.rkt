@@ -25,7 +25,9 @@
          keepalive
          success
          failure
-         add-task)
+         add-task
+         from-task
+         )
 
 (define-logger md)
 
@@ -310,3 +312,9 @@
                      #:pre               pre
                      #:post              post)])))))
   result-ch)
+
+;;----------------------------------------------------------------------
+
+(define/contract (from-task m val)
+  (-> majordomo? any/c channel?)
+  (add-task m identity val))

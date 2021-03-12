@@ -7,7 +7,7 @@
          racket/list
          "../main.rkt")
 
-(expect-n-tests 38)
+(expect-n-tests 41)
 
 (test-suite
  "majordomo"
@@ -235,3 +235,11 @@
       [catch (any/c (λ (e)
                       (display "failed to filter. Result:") (print e)
                       (ok #f "failed!  did not manage to filter results before preprocess")))]))
+
+(test-suite
+ "from-task"
+ (define jarvis (start-majordomo))
+
+ (define result (from-task jarvis 7))
+ (is-type result channel? "from-task returns a channel, as expected")
+ (is (task.data (sync result)) 7 "the channel returned the specified value"))
