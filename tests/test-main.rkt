@@ -7,7 +7,7 @@
          racket/list
          "../main.rkt")
 
-(expect-n-tests 41)
+(expect-n-tests 43)
 
 (test-suite
  "majordomo"
@@ -238,20 +238,18 @@
 
 (test-suite
  "from-task"
- (define jarvis (start-majordomo))
 
- (define result (from-task jarvis 7))
+ (define result (from-task 7))
  (is-type result channel? "from-task returns a channel, as expected")
  (is (task.data (sync result)) 7 "the channel returned the specified value")
- (stop-majordomo jarvis)
  )
 
 (test-suite
  "get-task-result"
 
  (define jarvis (start-majordomo))
- (is (get-task-data jarvis identity 7)
-     7
+ (is (get-task-data jarvis add1 7)
+     8
      "get-task-result returns the value without having to explicitly sync and task.data")
 
  (stop-majordomo jarvis)

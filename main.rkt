@@ -330,9 +330,9 @@
 
 ;;----------------------------------------------------------------------
 
-(define/contract (from-task m val)
-  (-> majordomo? any/c channel?)
-  (add-task m identity val))
+(define/contract (from-task val)
+  (-> any/c channel?)
+  (add-task (start-majordomo) identity val))
 
 ;;----------------------------------------------------------------------
 

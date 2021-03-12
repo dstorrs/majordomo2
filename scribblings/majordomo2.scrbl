@@ -38,13 +38,11 @@ The provided functions and data types are defined in the @secref["API"] section,
       (parameterize ([sandbox-output 'string]
                      [sandbox-error-output 'string]
                      [sandbox-memory-limit 50])
-        (make-evaluator 'racket)))))
+        [make-evaluator #:requires (list "../main.rkt") 'racket]))))
 
 @examples[
           #:eval eval
           #:label #f
-
-	  (require majordomo2)
 
           (define (build-email-text msg names)
             (for/list ([name names])
@@ -85,7 +83,7 @@ The provided functions and data types are defined in the @secref["API"] section,
           #:eval eval
           #:label #f
 
-	  (require majordomo2)
+	  ;(require majordomo2)
 
           (define jarvis (start-majordomo))
 
@@ -152,8 +150,6 @@ The provided functions and data types are defined in the @secref["API"] section,
           #:eval eval
           #:label #f
 
-	  (require majordomo2)
-
           (define jarvis (start-majordomo))
 
           @#reader scribble/comment-reader
@@ -186,8 +182,6 @@ If you're going to use pre/post processing and/or sorting, it's a good idea to e
           #:eval eval
           #:label #f
 
-	  (require majordomo2)
-
           (define jarvis (start-majordomo))
 
           (define (simple)
@@ -216,8 +210,6 @@ Often you'll have a function that wants individual arguments but you have the ar
           #:eval eval
           #:label #f
 
-	  (require majordomo2)
-
           (define jarvis (start-majordomo))
 
           (define args (for/list ([i 5]) i))
@@ -229,7 +221,7 @@ Often you'll have a function that wants individual arguments but you have the ar
           @#reader scribble/comment-reader
           ; This works because we are telling the task to unwrap the list into separate args
           (pretty-print
-            (task.data (sync (add-task jarvis + args #:unwrap? #t))))
+           (task.data (sync (add-task jarvis + args #:unwrap? #t))))
           ]
 
 @subsection{Restarting}
@@ -239,8 +231,6 @@ When a task fails, either because it threw an error or simply timed out, it will
 @examples[
           #:eval eval
           #:label #f
-
-	  (require majordomo2)
 
           (define jarvis (start-majordomo))
 
@@ -330,8 +320,6 @@ When a task fails, either because it threw an error or simply timed out, it will
           #:eval eval
           #:label #f
 
-	  (require majordomo2)
-
           (define jarvis (start-majordomo))
 
           @#reader scribble/comment-reader
@@ -369,8 +357,26 @@ When a task fails, either because it threw an error or simply timed out, it will
 	  (stop-majordomo jarvis)
           ]
 
+@subsection[#:tag "convenience-functions"]{Convenience Functions}
 
+Some operations are common enough that it's worth having a short form to avoid boilerplate.
 
+@examples[
+          #:eval eval
+          #:label #f
+
+          (define jarvis (start-majordomo))
+
+          @#reader scribble/comment-reader
+          ; A task that simply returns a specified value.
+          (task.data (sync (from-task 'hello)))
+
+          @#reader scribble/comment-reader
+          ; Simplify (task.data (sync (add-task ...))) into one call
+          (get-task-data jarvis add1 7)
+
+          (stop-majordomo jarvis)
+          ]
 
 @section[#:tag "API"]{API}
 
@@ -495,6 +501,26 @@ Tasks are created inside, and managed by, a @racket[majordomo] instance.
                        Obviously, if the results of your function are not a list, either leave @racketid[sort-op] as @racket[#f] so that it doesn't try to sort and fail, or else use @racket[#:pre list] to make it a list before sorting is applied.
                        }
 
+@defproc[(from-task [val any/c]) channel?]{A convenience function equivalent to (add-task (start-majordomo) identity val)}
+
+@defproc[(get-task-data [jarvis majordomo?]
+                        [action (unconstrained-domain-> any/c)]
+                        [arg                any/c] ...
+                        [#:keepalive         keepalive-time (and/c real? (not/c negative?)) 5]
+                        [#:retries           retries        (or/c natural-number/c +inf.0) 3]
+                        [#:parallel?         parallel?      boolean? #f]
+                        [#:unwrap?           unwrap?        boolean? #f]
+                        [#:filter            filter-func    (or/c #f procedure?) #f]
+                        [#:pre               pre            procedure? identity]
+                        [#:sort-op           sort-op        (or/c #f (-> any/c any/c any/c)) #f]
+                        [#:sort-key          sort-key       (-> any/c any/c) identity]
+                        [#:sort-cache-keys?  cache-keys?    boolean? #f]
+                        [#:post              post           procedure? identity])
+         channel?]{A convenience function equivalent to:
+                     
+                     @racket[(task.data (sync (add-task jarvis action args keyword-args)))]
+
+                     The arguments and keywords all have the same meaning as @racket[add-task].}
 
 @section[#:tag "parallel-processing"]{Parallel Processing}
 
