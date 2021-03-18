@@ -378,8 +378,8 @@
 
 ;;----------------------------------------------------------------------
 
-; Sometimes we'll has a task that creates subtasks and we want to
-; collapse all the data back together.  For example:
+; Sometimes we'll have a task that creates subtasks and we want to
+; collapse all the data back together.
 (define/contract (flatten-nested-tasks the-task)
   (->i ([the-task task?])
        ()
