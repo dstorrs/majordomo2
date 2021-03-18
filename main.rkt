@@ -29,6 +29,8 @@
          add-task
          from-task
          get-task-data
+
+         flatten-nested-tasks
          )
 
 (define-logger md)
@@ -373,3 +375,21 @@
                                  #:sort-cache-keys?  cache-keys?
                                  #:post              post)
                           args))))
+
+;;----------------------------------------------------------------------
+
+; Sometimes we'll has a task that creates subtasks and we want to
+; collapse all the data back together.  For example:
+(define/contract (flatten-nested-tasks the-task)
+  (->i ([the-task task?])
+       ()
+       [result task?]
+       #:post (result the-task) (equal? (task.id result) (task.id the-task)))
+
+  (define (helper val)
+    (match val
+      [(? task?) (helper (task.data val))]
+      [(? list?) (map helper val)]
+      [_ val]))
+
+  (set-task-data the-task (helper (task.data the-task))))
