@@ -33,7 +33,7 @@
          flatten-nested-tasks
          )
 
-(define-logger md)
+(define-logger majordomo2)
 
 ;;----------------------------------------------------------------------
 
@@ -56,14 +56,14 @@
 ;;----------------------------------------------------------------------
 
 (define (start-majordomo)
-  (log-md-debug "~a: starting majordomo..." (thread-id))
+  (log-majordomo2-debug "~a: starting majordomo..." (thread-id))
   (majordomo++))
 
 ;;----------------------------------------------------------------------
 
 (define/contract (stop-majordomo jarvis)
   (-> majordomo? any)
-  (log-md-debug "~a: stopping majordomo..." (thread-id))
+  (log-majordomo2-debug "~a: stopping majordomo..." (thread-id))
   (custodian-shutdown-all (majordomo.cust jarvis)))
 
 ;;----------------------------------------------------------------------
@@ -71,17 +71,17 @@
 (define finalized? (make-parameter #f))
 
 (define (update-data data)
-  (log-md-debug "~a: update-data with ~v" (thread-id) data)
+  (log-majordomo2-debug "~a: update-data with ~v" (thread-id) data)
   (define the-task (current-task))
   (current-task (set-task-data the-task data))
   (channel-put (task.manager-ch the-task) (list 'update-data data)))
 
 (define (keepalive)
-  (log-md-debug "~a: keepalive" (thread-id))
+  (log-majordomo2-debug "~a: keepalive" (thread-id))
   (channel-put (task.manager-ch (current-task)) 'keepalive))
 
 (define (success [data the-unsupplied-arg])
-  (log-md-debug "~a: success! data is: ~v" (thread-id) data)
+  (log-majordomo2-debug "~a: success! data is: ~v" (thread-id) data)
   (finalized? #t)
   (finish-with 'success
                (if (unsupplied-arg? data)
@@ -89,7 +89,7 @@
                    (set-task-data (current-task) data))))
 
 (define (failure [data the-unsupplied-arg])
-  (log-md-debug "~a: failure! data is: ~v" (thread-id) data)
+  (log-majordomo2-debug "~a: failure! data is: ~v" (thread-id) data)
   (finalized? #t)
   (finish-with 'failure
                (if (unsupplied-arg? data)
@@ -98,7 +98,7 @@
 
 (define/contract (finish-with status the-task)
   (-> symbol? task? any)
-  (log-md-debug "~a: finish-with status: ~v" (thread-id) status)
+  (log-majordomo2-debug "~a: finish-with status: ~v" (thread-id) status)
   (channel-put (task.manager-ch the-task)
                (list status the-task)))
 
@@ -124,11 +124,11 @@
       #:post              procedure?
       any)
 
-  (log-md-debug "~a: entering finalize" (thread-id))
+  (log-majordomo2-debug "~a: entering finalize" (thread-id))
   (define raw-data (task.data the-task))
 
-  (log-md-debug "~a: raw data is: ~v" (thread-id) raw-data)
-  (log-md-debug "~a: filter func is: ~a" (thread-id) filter-func)
+  (log-majordomo2-debug "~a: raw data is: ~v" (thread-id) raw-data)
+  (log-majordomo2-debug "~a: filter func is: ~a" (thread-id) filter-func)
 
   (channel-put
    result-ch
@@ -141,7 +141,7 @@
          [#f raw-data]
          [_  (filter filter-func raw-data)]))
 
-     (log-md-debug "~a: putting results on result-ch. filtered data is: ~v"
+     (log-majordomo2-debug "~a: putting results on result-ch. filtered data is: ~v"
                    (thread-id) filtered-data)
 
      (channel-put result-ch
@@ -166,7 +166,7 @@
                            #:sort-op           [sort-op     #f]
                            #:sort-key          [sort-key    identity]
                            #:sort-cache-keys?  [cache-keys? #f]
-                           #:post              [post       identity]
+                           #:post              [post        identity]
                            . args)
   (->* (majordomo? (unconstrained-domain-> any/c))
        (#:keepalive         (and/c real? (not/c negative?))
@@ -266,7 +266,7 @@
         (thread
          (thunk
           (with-handlers ([any/c failure])
-            (log-md-debug "~a: about to apply action" (thread-id))
+            (log-majordomo2-debug "~a: about to apply action" (thread-id))
 
             ; The arguments are passed into a rest arg, meaning that they come to as a
             ; list and we therefore need to use 'apply' to unwrap them so that the action
