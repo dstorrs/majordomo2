@@ -38,7 +38,7 @@ The provided functions and data types are defined in the @secref["API"] section,
       (parameterize ([sandbox-output 'string]
                      [sandbox-error-output 'string]
                      [sandbox-memory-limit 50])
-        [make-evaluator #:requires (list "../main.rkt") 'racket]))))
+        [make-evaluator #:requires (list 'majordomo2) 'racket]))))
 
 @examples[
           #:eval eval
