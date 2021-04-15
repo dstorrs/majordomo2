@@ -29,7 +29,6 @@
          add-task
          from-task
          get-task-data
-
          flatten-nested-tasks
          )
 
@@ -109,23 +108,28 @@
 ; (current-task) and then doing a channel-put on the result-ch arg in order to make the
 ; value available to the customer.
 (define/contract (finalize the-task result-ch
-                           #:sort-op           sort-op
-                           #:sort-key          sort-key
-                           #:sort-cache-keys?  cache-keys?
-                           #:filter            filter-func
-                           #:pre               pre
-                           #:post              post)
+                           #:sort-op               sort-op
+                           #:sort-key              sort-key
+                           #:sort-cache-keys?      cache-keys?
+                           #:filter                filter-func
+                           #:pre                   pre
+                           #:post                  post
+                           #:flatten-nested-tasks? flatten-nested-tasks?)
   (-> task? channel?
-      #:filter            (or/c #f procedure?)
-      #:pre               procedure?
-      #:sort-op           (or/c #f (-> any/c any/c any/c))
-      #:sort-key          (-> any/c any/c)
-      #:sort-cache-keys?  boolean?
-      #:post              procedure?
+      #:filter                (or/c #f procedure?)
+      #:pre                   procedure?
+      #:sort-op               (or/c #f (-> any/c any/c any/c))
+      #:sort-key              (-> any/c any/c)
+      #:sort-cache-keys?      boolean?
+      #:post                  procedure?
+      #:flatten-nested-tasks? boolean?
       any)
 
   (log-majordomo2-debug "~a: entering finalize" (thread-id))
-  (define raw-data (task.data the-task))
+  (define raw-data
+    (task.data (if flatten-nested-tasks?
+                   (flatten-nested-tasks the-task)
+                   the-task)))
 
   (log-majordomo2-debug "~a: raw data is: ~v" (thread-id) raw-data)
   (log-majordomo2-debug "~a: filter func is: ~a" (thread-id) filter-func)
@@ -142,7 +146,7 @@
          [_  (filter filter-func raw-data)]))
 
      (log-majordomo2-debug "~a: putting results on result-ch. filtered data is: ~v"
-                   (thread-id) filtered-data)
+                           (thread-id) filtered-data)
 
      (channel-put result-ch
                   (set-task-data the-task
@@ -157,28 +161,30 @@
 ;;----------------------------------------------------------------------
 
 (define/contract (add-task jarvis action
-                           #:keepalive         [keepalive   5]
-                           #:retries           [retries     3]
-                           #:parallel?         [parallel?   #f]
-                           #:unwrap?           [unwrap?     #f]
-                           #:filter            [filter-func #f]
-                           #:pre               [pre         identity]
-                           #:sort-op           [sort-op     #f]
-                           #:sort-key          [sort-key    identity]
-                           #:sort-cache-keys?  [cache-keys? #f]
-                           #:post              [post        identity]
-                           . args)
+                           #:keepalive             [keepalive   5]
+                           #:retries               [retries     3]
+                           #:parallel?             [parallel?   #f]
+                           #:unwrap?               [unwrap?     #f]
+                           #:flatten-nested-tasks? [flatten-nested-tasks? #f]
+                           #:filter                [filter-func #f]
+                           #:pre                   [pre         identity]
+                           #:sort-op               [sort-op     #f]
+                           #:sort-key              [sort-key    identity]
+                           #:sort-cache-keys?      [cache-keys? #f]
+                           #:post                  [post        identity]
+                           .                       args)
   (->* (majordomo? (unconstrained-domain-> any/c))
-       (#:keepalive         (and/c real? (not/c negative?))
-        #:retries           (or/c natural-number/c +inf.0)
-        #:parallel?         boolean?
-        #:unwrap?            boolean?
-        #:filter            (or/c #f procedure?)
-        #:pre               procedure?
-        #:sort-op           (or/c #f (-> any/c any/c any/c))
-        #:sort-key          (-> any/c any/c)
-        #:sort-cache-keys?  boolean?
-        #:post              procedure?)
+       (#:keepalive             (and/c real? (not/c negative?))
+        #:retries               (or/c natural-number/c +inf.0)
+        #:parallel?             boolean?
+        #:unwrap?               boolean?
+        #:flatten-nested-tasks? boolean?
+        #:filter                (or/c #f procedure?)
+        #:pre                   procedure?
+        #:sort-op               (or/c #f (-> any/c any/c any/c))
+        #:sort-key              (-> any/c any/c)
+        #:sort-cache-keys?      boolean?
+        #:post                  procedure?)
        #:rest list?
        channel?)
 
@@ -195,9 +201,10 @@
                               action
                               (list arg)
                               (make-channel)
-                              #:keepalive         keepalive
-                              #:retries           retries
-                              #:parallel?         #f)))
+                              #:flatten-nested-tasks? flatten-nested-tasks?
+                              #:keepalive             keepalive
+                              #:retries               retries
+                              #:parallel?             #f)))
 
          ; Collect all the results from the subtasks
          (define raw-data (map (compose task.data sync) subtask-channels))
@@ -206,12 +213,13 @@
          ; blocking.
          (thread-with-id (thunk (finalize (task++ #:data raw-data)
                                           result-ch
-                                          #:sort-op           sort-op
-                                          #:sort-key          sort-key
-                                          #:sort-cache-keys?  cache-keys?
-                                          #:filter            filter-func
-                                          #:pre               pre
-                                          #:post              post)))
+                                          #:flatten-nested-tasks? flatten-nested-tasks?
+                                          #:sort-op               sort-op
+                                          #:sort-key              sort-key
+                                          #:sort-cache-keys?      cache-keys?
+                                          #:filter                filter-func
+                                          #:pre                   pre
+                                          #:post                  post)))
          ; return the result channel
          result-ch]
         [else
@@ -219,40 +227,43 @@
                           action
                           args
                           result-ch
-                          #:keepalive         keepalive
-                          #:retries           retries
-                          #:parallel?         parallel?
-                          #:unwrap?            unwrap?
-                          #:sort-op           sort-op
-                          #:sort-key          sort-key
-                          #:sort-cache-keys?  cache-keys?
-                          #:filter            filter-func
-                          #:pre               pre
-                          #:post              post)]))
+                          #:flatten-nested-tasks? flatten-nested-tasks?
+                          #:keepalive             keepalive
+                          #:retries               retries
+                          #:parallel?             parallel?
+                          #:unwrap?               unwrap?
+                          #:sort-op               sort-op
+                          #:sort-key              sort-key
+                          #:sort-cache-keys?      cache-keys?
+                          #:filter                filter-func
+                          #:pre                   pre
+                          #:post                  post)]))
 
 
 (define/contract (add-task-helper jarvis action args result-ch
-                                  #:keepalive         [keepalive    5]
-                                  #:retries           [retries      3]
-                                  #:parallel?         [parallel?    #f]
-                                  #:unwrap?           [unwrap?      #f]
-                                  #:filter            [filter-func  #f]
-                                  #:pre               [pre          identity]
-                                  #:sort-op           [sort-op      #f]
-                                  #:sort-key          [sort-key     identity]
-                                  #:sort-cache-keys?  [cache-keys?  #f]
-                                  #:post              [post         identity])
+                                  #:flatten-nested-tasks? [flatten-nested-tasks? #f]
+                                  #:keepalive             [keepalive    5]
+                                  #:retries               [retries      3]
+                                  #:parallel?             [parallel?    #f]
+                                  #:unwrap?               [unwrap?      #f]
+                                  #:filter                [filter-func  #f]
+                                  #:pre                   [pre          identity]
+                                  #:sort-op               [sort-op      #f]
+                                  #:sort-key              [sort-key     identity]
+                                  #:sort-cache-keys?      [cache-keys?  #f]
+                                  #:post                  [post         identity])
   (->* (majordomo? (unconstrained-domain-> any/c) list? channel?)
-       (#:keepalive         (and/c real? (not/c negative?))
-        #:retries           (or/c exact-nonnegative-integer? +inf.0)
-        #:parallel?         boolean?
-        #:unwrap?            boolean?
-        #:sort-op           (or/c #f (-> any/c any/c any/c))
-        #:sort-key          (-> any/c any/c)
-        #:sort-cache-keys?  boolean?
-        #:filter            (or/c #f procedure?)
-        #:pre               procedure?
-        #:post              procedure?)
+       (#:keepalive             (and/c real? (not/c negative?))
+        #:flatten-nested-tasks? boolean?
+        #:retries               (or/c exact-nonnegative-integer? +inf.0)
+        #:parallel?             boolean?
+        #:unwrap?               boolean?
+        #:sort-op               (or/c #f (-> any/c any/c any/c))
+        #:sort-key              (-> any/c any/c)
+        #:sort-cache-keys?      boolean?
+        #:filter                (or/c #f procedure?)
+        #:pre                   procedure?
+        #:post                  procedure?)
        channel?)
 
   (parameterize ([current-custodian (majordomo.cust jarvis)])
@@ -305,12 +316,13 @@
           ;
           [(list result the-task)
            (finalize (set-task-status the-task result) result-ch
-                     #:sort-op           sort-op
-                     #:sort-key          sort-key
-                     #:sort-cache-keys?  cache-keys?
-                     #:filter            filter-func
-                     #:pre               pre
-                     #:post              post)]
+                     #:flatten-nested-tasks?  flatten-nested-tasks?
+                     #:sort-op                sort-op
+                     #:sort-key               sort-key
+                     #:sort-cache-keys?       cache-keys?
+                     #:filter                 filter-func
+                     #:pre                    pre
+                     #:post                   post)]
           ;
           [(and value (or (== worker) #f))
            #:when (> retries 0) ; timeout or thread died, can be retried
@@ -322,12 +334,13 @@
           [(and value (or (== worker) #f)) ; timeout or thread died, no retries left
            (kill-thread worker)
            (finalize (set-task-status the-task 'timeout) result-ch
-                     #:sort-op           sort-op
-                     #:sort-key          sort-key
-                     #:sort-cache-keys?  cache-keys?
-                     #:filter            filter-func
-                     #:pre               pre
-                     #:post              post)])))))
+                     #:flatten-nested-tasks? flatten-nested-tasks?
+                     #:sort-op               sort-op
+                     #:sort-key              sort-key
+                     #:sort-cache-keys?      cache-keys?
+                     #:filter                filter-func
+                     #:pre                   pre
+                     #:post                  post)])))))
   result-ch)
 
 ;;----------------------------------------------------------------------
@@ -390,6 +403,6 @@
     (match val
       [(? task?) (helper (task.data val))]
       [(? list?) (map helper val)]
-      [_ val]))
+      [_         val]))
 
   (set-task-data the-task (helper (task.data the-task))))
