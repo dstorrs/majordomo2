@@ -214,7 +214,7 @@ Often you'll have a function that wants individual arguments but you have the ar
 
           (define args (for/list ([i 5]) i))
           @#reader scribble/comment-reader
-          ; This fails because we want need to pass 0 1 2 3 4 separately instead of as a list
+          ; This fails because we need to pass 0 1 2 3 4 separately instead of as a list
           (pretty-print
            (task.data (sync (add-task jarvis + args))))
 
@@ -223,6 +223,33 @@ Often you'll have a function that wants individual arguments but you have the ar
           (pretty-print
            (task.data (sync (add-task jarvis + args #:unwrap? #t))))
           ]
+
+@subsection{Flattening}
+
+Sometimes, usually when running in parallel, you'll have a task where the data field ends up containing a list of tasks, each of which might also be nested.  You could dig that out on the far end or you could have the system do it for you.
+
+@examples[
+          #:eval eval
+          #:label #f
+
+          (define jarvis (start-majordomo))
+
+        (define (make-task x)
+          (task++ #:data x))
+
+        (let* ([jarvis (start-majordomo)]
+               [without-flatten (sync (add-task jarvis make-task 0 1 2 #:parallel? #t))]
+               [with-flatten    (sync (add-task jarvis make-task 0 1 2
+                                                #:parallel? #t
+                                                #:flatten-nested-tasks? #t))])
+          (printf "without flattening: ~v\n" (task.data without-flatten))
+          (printf "with flattening, via flatten-nested-tasks: ~v\n" (task.data (flatten-nested-tasks without-flatten)))
+          (printf "with flattening, via add-task: ~v\n" (task.data with-flatten))
+
+          (stop-majordomo jarvis))
+
+          ]
+
 
 @subsection{Restarting}
 
@@ -517,7 +544,7 @@ Tasks are created inside, and managed by, a @racket[majordomo] instance.
                         [#:sort-cache-keys?  cache-keys?    boolean? #f]
                         [#:post              post           procedure? identity])
          channel?]{A convenience function equivalent to:
-                     
+
                      @racket[(task.data (sync (add-task jarvis action args keyword-args)))]
 
                      The arguments and keywords all have the same meaning as @racket[add-task].}
