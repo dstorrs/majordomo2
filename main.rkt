@@ -26,11 +26,11 @@
          success
          failure
 
+         flatten-nested-tasks
+
          add-task
          from-task
-         get-task-data
-         flatten-nested-tasks
-         )
+         get-task-data)
 
 (define-logger majordomo2)
 
@@ -345,6 +345,9 @@
 
 ;;----------------------------------------------------------------------
 
+; This is here to provide a consistent interface in the case where you want a specific
+; pre-known value to come back, call this.  It will provide a channel which syncs to a
+; task which contains the value in its task.data field.
 (define/contract (from-task val)
   (-> any/c channel?)
   (add-task (start-majordomo) identity val))

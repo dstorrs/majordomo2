@@ -127,8 +127,9 @@ The provided functions and data types are defined in the @secref["API"] section,
 
           @#reader scribble/comment-reader
           (pretty-print
-           ; Now we'll sort the results.  NB: sort-cache-keys? is unnecessary here since
-           ; the key is cheap to calculate, but it's included for sake of demonstration.
+           ; Now we'll sort the results based on their status.  NB: sort-cache-keys? is 
+           ; unnecessary here since the key is cheap to calculate, but it's included for
+	   ; sake of demonstration.
            (task.data (sync (add-task jarvis mock-network-function
                                       "4.4.4.4" "8.8.8.8" "172.67.188.90" "104.21.48.235"
 				      #:sort-op symbol<?
@@ -174,9 +175,9 @@ The provided functions and data types are defined in the @secref["API"] section,
 	  ]
 
 
-@subsection{Filtering Task Results}
+@subsection[#:tag "filtering"]{Filtering Task Results}
 
-If you're going to use pre/post processing and/or sorting, it's a good idea to ensure that all elements in your data set are appropriate.  To make this easy you can filter the results before anything else happens in order to get rid of bad results.
+If you're going to use pre/post processing and/or sorting, it's a good idea to ensure that all elements in your data set are appropriate.  To make this easy you can filter the results before preprocessing, sorting, and postprocessing happen in order to get rid of bad results.
 
 @examples[
           #:eval eval
@@ -201,55 +202,6 @@ If you're going to use pre/post processing and/or sorting, it's a good idea to e
 
 	  (stop-majordomo jarvis)
 	  ]
-
-@subsection{Unwrapping}
-
-Often you'll have a function that wants individual arguments but you have the arguments as a list, because you generated them using a @racket[map] or got them from a database using @racket[query-rows] or etc.  You can save yourself an unnecessary @racket[apply] by using the @racket[#:unwrap?] argument.  (Which does the @racket[apply] for you.)
-
-@examples[
-          #:eval eval
-          #:label #f
-
-          (define jarvis (start-majordomo))
-
-          (define args (for/list ([i 5]) i))
-          @#reader scribble/comment-reader
-          ; This fails because we need to pass 0 1 2 3 4 separately instead of as a list
-          (pretty-print
-           (task.data (sync (add-task jarvis + args))))
-
-          @#reader scribble/comment-reader
-          ; This works because we are telling the task to unwrap the list into separate args
-          (pretty-print
-           (task.data (sync (add-task jarvis + args #:unwrap? #t))))
-          ]
-
-@subsection{Flattening}
-
-Sometimes, usually when running in parallel, you'll have a task where the data field ends up containing a list of tasks, each of which might also be nested.  You could dig that out on the far end or you could have the system do it for you.
-
-@examples[
-          #:eval eval
-          #:label #f
-
-          (define jarvis (start-majordomo))
-
-        (define (make-task x)
-          (task++ #:data x))
-
-        (let* ([jarvis (start-majordomo)]
-               [without-flatten (sync (add-task jarvis make-task 0 1 2 #:parallel? #t))]
-               [with-flatten    (sync (add-task jarvis make-task 0 1 2
-                                                #:parallel? #t
-                                                #:flatten-nested-tasks? #t))])
-          (printf "without flattening: ~v\n" (task.data without-flatten))
-          (printf "with flattening, via flatten-nested-tasks: ~v\n" (task.data (flatten-nested-tasks without-flatten)))
-          (printf "with flattening, via add-task: ~v\n" (task.data with-flatten))
-
-          (stop-majordomo jarvis))
-
-          ]
-
 
 @subsection{Restarting}
 
@@ -384,6 +336,60 @@ When a task fails, either because it threw an error or simply timed out, it will
 	  (stop-majordomo jarvis)
           ]
 
+@subsection[#:tag "unwrapping"]{Unwrapping}
+
+Often you'll have a function that wants individual arguments but you have the arguments as a list, because you generated them using a @racket[map] or got them from a database using @racket[query-rows] or etc.  You can save yourself an unnecessary @racket[apply] by using the @racket[#:unwrap?] argument.
+
+@examples[
+          #:eval eval
+          #:label #f
+
+          (define jarvis (start-majordomo))
+
+          (define args (for/list ([i 5]) i))
+          @#reader scribble/comment-reader
+          ; This fails because we need to pass 0 1 2 3 4 separately instead of as a list
+          (pretty-print
+           (task.data (sync (add-task jarvis + args))))
+
+          @#reader scribble/comment-reader
+          ; This works because we are telling the task to unwrap the list into separate args
+          (task.data (sync (add-task jarvis + args #:unwrap? #t)))
+          ]
+
+@subsection[#:tag "flattening"]{Flattening}
+
+Sometimes, usually when running in parallel, you'll have a task where the data field ends up containing one or more tasks, each of which might also be nested, and what you actually want is the data from those subtasks.  You could dig that out on the far end or you could have the system do it for you.
+
+@examples[
+          #:eval eval
+          #:label #f
+
+          (define jarvis (start-majordomo))
+
+        (define (make-task x)
+          (task++ #:data x))
+
+          @#reader scribble/comment-reader
+          (let* ([jarvis (start-majordomo)]
+               [without-flatten (sync (add-task jarvis make-task 0 1 2 #:parallel? #t))]
+               [nested (sync (add-task jarvis make-task (for/list ([i 3]) (make-task i)) #:unwrap? #t #:parallel? #t))]
+               [with-flatten    (sync (add-task jarvis make-task 0 1 2 (make-task (make-task 3))
+                                                #:parallel? #t
+                                                #:flatten-nested-tasks? #t))])
+          (printf "data from without-flatten: ~v\n" (task.data without-flatten))
+          (printf "data from nested tasks in without-flatten: ~v\n" (map task.data (task.data without-flatten)))
+          (printf "data via explicit call to flatten-nested-tasks: ~v\n" (task.data (flatten-nested-tasks without-flatten)))
+	  ;
+	  ; Data from nested tasks gets lifted regardless of nesting depth
+          (printf "data via #:flatten-nested-tasks?: ~v\n" (task.data with-flatten))
+
+          (stop-majordomo jarvis))
+          ]
+
+Note that flattening loses the id and status fields of the subtasks.
+
+
 @subsection[#:tag "convenience-functions"]{Convenience Functions}
 
 Some operations are common enough that it's worth having a short form to avoid boilerplate.
@@ -392,17 +398,13 @@ Some operations are common enough that it's worth having a short form to avoid b
           #:eval eval
           #:label #f
 
-          (define jarvis (start-majordomo))
-
           @#reader scribble/comment-reader
-          ; A task that simply returns a specified value.
+          ; A task that simply returns a specified value.  Generates its own majordomo
           (task.data (sync (from-task 'hello)))
 
           @#reader scribble/comment-reader
-          ; Simplify (task.data (sync (add-task ...))) into one call
-          (get-task-data jarvis add1 7)
-
-          (stop-majordomo jarvis)
+          ; Simplify adding task, syncing for result, and fetching data
+          (get-task-data (start-majordomo) add1 7)
           ]
 
 @section[#:tag "API"]{API}
@@ -422,9 +424,7 @@ Some operations are common enough that it's worth having a short form to avoid b
          (task++ [#:id     id     symbol?       (gensym "task-")]
                  [#:status status task-status/c 'unspecified]
                  [#:data   data   any/c         (hash)])
-         task?]{A task struct encapsulates the details of a task.  It has a unique ID as an aid in debugging and organization, a status to identify what the outcome of the task was, and the data generated by the execution of the task.
-
-                  NOTE:  Although the base @racket[task] constructor is provided, you will not be able to use it since it contains private fields that are not documented.}
+         task?]{A task struct encapsulates the details of a task.  It has a unique ID as an aid in debugging and organization, a status to identify what the outcome of the task was, and the data generated by the execution of the task.}
 
 @defproc[(task? [the-task any/c]) boolean?]{Predicate for identifying tasks.}
 
@@ -442,24 +442,28 @@ Some operations are common enough that it's worth having a short form to avoid b
 
 @defproc[(set-task-id [the-task task?] [val symbol?]) task?]{Functional setter for the @racketid[id] field.}
 
-@defproc[(set-task-status [the-task task?] [val symbol?]) task?]{Functional setter for the @racketid[status] field.}
+@defproc[(set-task-status [the-task task?] [val task-status/c]) task?]{Functional setter for the @racketid[status] field.}
 
-@defproc[(set-task-data [the-task task?] [val symbol?]) task?]{Functional setter for the @racketid[data] field.  Prefer @racket[update-data] instead of using this directly, since that will also update the @racket[current-task] parameter and send a keepalive to the manager thread to delay restarting.}
+@defproc[(set-task-data [the-task task?] [val any/c]) task?]{Functional setter for the @racketid[data] field.  Prefer @racket[update-data] instead of using this directly, since that will also update the @racket[current-task] parameter and send a keepalive to the manager thread to delay restarting.}
 
-@defparam[current-task t task? #:value #f]{A parameter that tracks the currently-running task.  It is functionally updated when you call the @racket[update-data], @racket[success], and @racket[failure] functions.}
+@defparam[current-task t task? #:value #f]{A parameter that tracks the currently-running task.  It is updated when you call the @racket[update-data], @racket[success], and @racket[failure] functions.}
 
 @defproc[(keepalive) void?]{Notify the manager that the task is still running.  This resets the timer and prevents the manager from restarting the task.}
 
-@defproc[(success [arg any/c the-unsupplied-arg]) void?]{If @racketid[arg] was supplied, set the @racketid[data] field of @racket[current-task] to @racketid[arg]. Set its @racketid[status] field to @racket['success].  Tell the manager that the worker has completed.  This will cause the manager to send the value of @racket[current-task] to the customer.}
+@defproc[(success [arg any/c the-unsupplied-arg]) void?]{If @racketid[arg] was NOT @racket[the-unsupplied-arg], set the @racketid[data] field of @racket[current-task] to @racketid[arg].
 
-@defproc[(failure [arg any/c the-unsupplied-arg]) void?]{If @racketid[arg] was supplied, set the @racketid[data] field of @racket[current-task] to @racketid[arg]. Set its @racketid[status] field to @racket['failure].  Tell the manager that the worker has completed.  This will cause the manager to send the value of @racket[current-task] to the customer.}
+Set the @racketid[status] field of @racket[current-task] to @racket['success].  Tell the manager that the worker has completed.  This will cause the manager to send the value of @racket[current-task] to the customer.}
+
+@defproc[(failure [arg any/c the-unsupplied-arg]) void?]{If @racketid[arg] was NOT @racket[the-unsupplied-arg], set the @racketid[data] field of @racket[current-task] to @racketid[arg].
+
+Set the @racketid[status] field of @racket[current-task] to @racket['failure].  Tell the manager that the worker has completed.  This will cause the manager to send the value of @racket[current-task] to the customer.}
 
 @defproc[(update-data [val any/c]) void?]{Set the @racketid[data] field of @racket[current-task] to @racketid[val]. Send a keepalive to the manager.}
 
 
 @subsection[#:tag "task-data"]{Task Data}
 
-The @racket[current-task] parameter holds a @racket[task] structure that can be used to carry state across restarts, such as which arguments have already been processed. (Since the task is started with the same argumens every time.)  The data field is also useful for returning a value from the action.  See @secref["task-results"] for details.
+The @racket[current-task] parameter holds a @racket[task] structure that can be used to carry state across restarts, such as which arguments have already been processed. (Since the task is started with the same arguments every time.)  The data field is also useful for returning a value from the action.  See @secref["task-results"] for details.
 
 There are three functions that an action can call to manipulate the contents of the @racket[current-task] struct:
 
@@ -488,16 +492,17 @@ Tasks are created inside, and managed by, a @racket[majordomo] instance.
 @defproc[(add-task [jarvis majordomo?]
                    [action (unconstrained-domain-> any/c)]
                    [arg                any/c] ...
-                   [#:keepalive         keepalive-time (and/c real? (not/c negative?)) 5]
-                   [#:retries           retries        (or/c natural-number/c +inf.0) 3]
-                   [#:parallel?         parallel?      boolean? #f]
-                   [#:unwrap?           unwrap?        boolean? #f]
-                   [#:filter            filter-func    (or/c #f procedure?) #f]
-                   [#:pre               pre            procedure? identity]
-                   [#:sort-op           sort-op        (or/c #f (-> any/c any/c any/c)) #f]
-                   [#:sort-key          sort-key       (-> any/c any/c) identity]
-                   [#:sort-cache-keys?  cache-keys?    boolean? #f]
-                   [#:post              post           procedure? identity])
+                   [#:keepalive              keepalive-time (and/c real? (not/c negative?)) 5]
+                   [#:retries                retries        (or/c natural-number/c +inf.0) 3]
+                   [#:parallel?              parallel?      boolean? #f]
+                   [#:unwrap?                unwrap?        boolean? #f]
+                   [#:flatten-nested-tasks?  flatten-nested-tasks?    boolean? #f]
+                   [#:filter                 filter-func    (or/c #f procedure?) #f]
+                   [#:pre                    pre            procedure? identity]
+                   [#:sort-op                sort-op        (or/c #f (-> any/c any/c any/c)) #f]
+                   [#:sort-key               sort-key       (-> any/c any/c) identity]
+                   [#:sort-cache-keys?       cache-keys?    boolean? #f]
+                   [#:post                   post           procedure? identity])
          channel?]{
                    Add a task to a majordomo instance.
 
@@ -513,37 +518,52 @@ Tasks are created inside, and managed by, a @racket[majordomo] instance.
 
                        Arguments are as follows:
 
-                       @racketid[keepalive-time] The duration within which the worker must either terminate or notify the manager that it's still running.
+                       @racketid[#:keepalive-time] The duration within which the worker must either terminate or notify the manager that it's still running.
 
-                       @racketid[retries] The number of times that the manager should restart the worker before giving up.  (Note:  This counts @italic{retries}, not maximum attempts.  The maximum number of times your action will be started is retries + 1, with the +1 being the initial attempt.)
+                       @racketid[#:retries] The number of times that the manager should restart the worker before giving up.  (Note:  This counts @italic{retries}, not maximum attempts.  The maximum number of times your action will be started is retries + 1, with the +1 being the initial attempt.)
 
-                       @racketid[parallel?] Whether the action should be run in parallel. See @secref["parallel-processing"].
+                       @racketid[#:parallel?] Whether the action should be run in parallel. See @secref["parallel-processing"].
 
-                       @racketid[pre] Pre-processes the results of the action immediately upon its completion.  The default preprocessor is @racket[identity].
+                       @racketid[#:unwrap?] Whether the arguments should be used as-is or one layer of listing should be removed.  Saves you the trouble of currying in an @racket[apply]. See @secref["unwrapping"].
 
-                       @racketid[sort-op], @racketid[sort-key], @racketid[sort-cache-keys?] Whether and how to sort the results of the action.  They are passed as the (respectively) @racketid[less-than?], @racket[#:key extract-key] and @racket[#:cache-keys? cache-keys?] arguments to a @racket[sort] call.  Sorting happens after preprocessing and before postprocessing.
+                       @racketid[#:flatten-nested-tasks?] If your action procedure produces a task that contains tasks you can have the system automatically lift the subtasks out and combine their data into the top-level task so that you don't have to dig it out on the far end.  You will lose the id and status fields of the subtasks if you do this.  See @secref["flattening"].
 
-                       @racketid[post] Postprocesses the results of the action immediately before returning them.  The default is @racket[identity].
+                       @racketid[#:filter] Filter the data after flattening (if any) and before passing it to the preprocessing function.  See @secref["filtering"].   
 
-                       Obviously, if the results of your function are not a list, either leave @racketid[sort-op] as @racket[#f] so that it doesn't try to sort and fail, or else use @racket[#:pre list] to make it a list before sorting is applied.
+                       @racketid[#:pre] Pre-processes the results of the action.  The default preprocessor is @racket[identity].  This happens after flattening and before sorting.
+
+                       @racketid[#:sort-op], @racketid[#:sort-key], @racketid[#:sort-cache-keys?] Whether and how to sort the results of the action.  They are passed as the (respectively) @racketid[less-than?], @racket[#:key extract-key] and @racket[#:cache-keys? cache-keys?] arguments to a @racket[sort] call.  Sorting happens after preprocessing and before postprocessing.
+
+                       @racketid[#:post] Postprocesses the results of the action immediately before returning them.  The default is @racket[identity].
+
+                       Obviously, if the results of your function are not a list, either leave @racketid[#:sort-op] as @racket[#f] so that it doesn't try to sort and fail, or else use @racket[#:pre list] to make it a list before sorting is applied.
+
+Consolidating previous information, the pipeline goes:
+
+@racketid[flatten] > @racketid[preprocess] > @racketid[sort] > @racketid[postprocess]
+
+Each step in the pipeline is optional.
                        }
 
-@defproc[(from-task [val any/c]) channel?]{A convenience function equivalent to (add-task (start-majordomo) identity val)}
+@defproc[(from-task [val any/c]) channel?]{This provides a way to return a specific value using an interface equivalent to the normal @racket[add-task] system.  It returns a channel which syncs to a task with a data field containing the specified value.  A convenience function equivalent to:
+
+            @racket[(add-task (start-majordomo) identity val)]}
 
 @defproc[(get-task-data [jarvis majordomo?]
                         [action (unconstrained-domain-> any/c)]
                         [arg                any/c] ...
-                        [#:keepalive         keepalive-time (and/c real? (not/c negative?)) 5]
-                        [#:retries           retries        (or/c natural-number/c +inf.0) 3]
-                        [#:parallel?         parallel?      boolean? #f]
-                        [#:unwrap?           unwrap?        boolean? #f]
-                        [#:filter            filter-func    (or/c #f procedure?) #f]
-                        [#:pre               pre            procedure? identity]
-                        [#:sort-op           sort-op        (or/c #f (-> any/c any/c any/c)) #f]
-                        [#:sort-key          sort-key       (-> any/c any/c) identity]
-                        [#:sort-cache-keys?  cache-keys?    boolean? #f]
-                        [#:post              post           procedure? identity])
-         channel?]{A convenience function equivalent to:
+                        [#:keepalive              keepalive-time (and/c real? (not/c negative?)) 5]
+                        [#:retries                retries        (or/c natural-number/c +inf.0) 3]
+                        [#:parallel?              parallel?      boolean? #f]
+                        [#:unwrap?                unwrap?        boolean? #f]
+                        [#:flatten-nested-tasks?  flatten-nested-tasks?    boolean? #f]
+                        [#:filter                 filter-func    (or/c #f procedure?) #f]
+                        [#:pre                    pre            procedure? identity]
+                        [#:sort-op                sort-op        (or/c #f (-> any/c any/c any/c)) #f]
+                        [#:sort-key               sort-key       (-> any/c any/c) identity]
+                        [#:sort-cache-keys?       cache-keys?    boolean? #f]
+                        [#:post                   post           procedure? identity])
+         channel?]{A convenience function that fetches the data for an action.  It is equivalent to:
 
                      @racket[(task.data (sync (add-task jarvis action args keyword-args)))]
 
@@ -551,7 +571,7 @@ Tasks are created inside, and managed by, a @racket[majordomo] instance.
 
 @section[#:tag "parallel-processing"]{Parallel Processing}
 
-As shown in the @secref["running-in-parallel"] demonstration, tasks can be parallelized simply by passing @racket[#:parallel? #t].  In this case @racket[add-task] will call itself recursively, creating subtasks and passing each of them one of the arguments in turn.  The main task will then wait for the subtasks to complete, aggregate their results into a list, and treat it as normal by running it through preprocessing, maybe sorting, and postprocessing.  The subtasks will be run with the same @racket[#:keepalive] and @racket[#:retries] values as the main tasks but everything else will be the default, meaning that all preprocessing and sorting will happen in the main task.
+As shown in the @secref["running-in-parallel"] demonstration, tasks can be parallelized simply by passing @racket[#:parallel? #t].  In this case @racket[add-task] will call itself recursively, creating subtasks and passing each of them one of the arguments in turn.  The main task will then wait for the subtasks to complete, aggregate their results into a list, and treat it as normal by running it through some or all of flattening, preprocessing, sorting, and postprocessing.  The subtasks will be run with the same @racket[#:keepalive] and @racket[#:retries] values as the main tasks but everything else will be the default, meaning that all preprocessing and sorting will happen in the main task.
 
 Caveats:
 
