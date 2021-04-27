@@ -2,7 +2,7 @@
 
 (define collection "majordomo2")
 (define deps '("base" "struct-plus-plus" "thread-with-id"))
-(define build-deps '("scribble-lib" "racket-doc" "rackunit-lib"))
+(define build-deps '("scribble-lib" "racket-doc" "rackunit-lib" "handy" "sandbox-lib"))
 (define scribblings '(("scribblings/majordomo2.scrbl" ())))
 (define pkg-desc "Managed job queue with stateful retry and automatic parallelization.  Obsoletes the original 'majordomo' package.")
 (define version "0.1")
