@@ -305,10 +305,10 @@
                       (ok #f "failed!  did not manage to filter results before preprocess")))]))
 
 (test-suite
- "from-task"
+ "return-value-task"
 
- (define result (from-task 7))
- (is-type result channel? "from-task returns a channel, as expected")
+ (define result (task-return-value 7))
+ (is-type result channel? "return-value-task returns a channel, as expected")
  (is (task.data (sync result)) 7 "the channel returned the specified value")
  )
 

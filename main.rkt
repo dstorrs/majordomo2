@@ -29,7 +29,7 @@
          flatten-nested-tasks
 
          add-task
-         from-task
+         task-return-value
          get-task-data)
 
 (define-logger majordomo2)
@@ -346,11 +346,20 @@
 ;;----------------------------------------------------------------------
 
 ; This is here to provide a consistent interface in the case where you want a specific
-; pre-known value to come back, call this.  It will provide a channel which syncs to a
-; task which contains the value in its task.data field.
-(define/contract (from-task val)
+; pre-known value to come back.  It will provide a channel which syncs to a task which
+; contains the value in its task.data field and 'success in its status field.
+;
+; If the value given was a task then we'll assume that the user wants that task returned,
+; not a task containing that task.  You might do that if you want the status field to be
+; something other than 'success.
+(define/contract (task-return-value val)
   (-> any/c channel?)
-  (add-task (start-majordomo) identity val))
+  (define ch (add-task (start-majordomo) identity val))
+  (match val
+    [(? task?)
+     (sync (thread (thunk (channel-put ch (task.data (sync ch))))))
+     ch]
+    [_ ch]))
 
 ;;----------------------------------------------------------------------
 

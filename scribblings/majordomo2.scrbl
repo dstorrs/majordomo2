@@ -400,7 +400,7 @@ Some operations are common enough that it's worth having a short form to avoid b
 
           @#reader scribble/comment-reader
           ; A task that simply returns a specified value.  Generates its own majordomo
-          (task.data (sync (from-task 'hello)))
+          (task.data (sync (task-return-value 'hello)))
 
           @#reader scribble/comment-reader
           ; Simplify adding task, syncing for result, and fetching data
@@ -545,7 +545,7 @@ Consolidating previous information, the pipeline goes:
 Each step in the pipeline is optional.
                        }
 
-@defproc[(from-task [val any/c]) channel?]{This provides a way to return a specific value using an interface equivalent to the normal @racket[add-task] system.  It returns a channel which syncs to a task with a data field containing the specified value.  A convenience function equivalent to:
+@defproc[(task-return-value [val any/c]) channel?]{This provides a way to return a specific value using an interface equivalent to the normal @racket[add-task] system.  It returns a channel which syncs to a task with a data field containing the specified value.  A convenience function equivalent to:
 
             @racket[(add-task (start-majordomo) identity val)]}
 
