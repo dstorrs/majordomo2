@@ -274,7 +274,7 @@
     (define (start-worker the-task)
       (parameterize ([current-custodian (make-custodian)]
                      [current-task      the-task])
-        (thread
+        (thread-with-id
          (thunk
           (with-handlers ([any/c failure])
             (log-majordomo2-debug "~a: about to apply action" (thread-id))
@@ -357,7 +357,7 @@
   (define ch (add-task (start-majordomo) identity val))
   (match val
     [(? task?)
-     (sync (thread (thunk (channel-put ch (task.data (sync ch))))))
+     (sync (thread-with-id (thunk (channel-put ch (task.data (sync ch))))))
      ch]
     [_ ch]))
 
