@@ -188,8 +188,12 @@
        #:rest list?
        channel?)
 
+  (log-majordomo2-debug "~a entering add-task for action ~v with args ~v"
+                        (thread-id) action args)
   (define result-ch (make-channel))
   (cond [parallel?
+         (log-majordomo2-debug "~a: add-task in parallel" (thread-id))
+
          ; Spawn each argument off into its own task which will run in its own thread.
 
          ;  NOTE: In some cases it will be easier for the customer to pass args as a list
@@ -223,6 +227,7 @@
          ; return the result channel
          result-ch]
         [else
+         (log-majordomo2-debug "~a: add-task NOT in parallel" (thread-id))
          (add-task-helper jarvis
                           action
                           args
@@ -276,10 +281,10 @@
                      [current-task      the-task])
         (thread-with-id
          (thunk
+          (log-majordomo2-debug "~a Starting worker thread for:\n\t action: ~v\n\targs: ~v" (thread-id) action args)
           (with-handlers ([any/c failure])
-            (log-majordomo2-debug "~a: about to apply action" (thread-id))
 
-            ; The arguments are passed into a rest arg, meaning that they come to as a
+            ; The arguments are passed into a rest arg, meaning that they come to us as a
             ; list and we therefore need to use 'apply' to unwrap them so that the action
             ; can get them as individual items.
             ;
@@ -304,6 +309,7 @@
     ; manager
     (thread-with-id
      (thunk
+      (log-majordomo2-debug "~a Starting manager thread for action ~v" (thread-id) action)
       (let loop ([retries  retries]
                  [the-task the-task]
                  [worker   worker])
@@ -388,6 +394,8 @@
         #:post              procedure?)
        #:rest list?
        any/c)
+  (log-majordomo2-debug "~a entering get-task-data for action ~v with args ~v"
+                        (thread-id) action args)
   (task.data (sync (apply (curry add-task jarvis action
                                  #:keepalive         keepalive
                                  #:retries           retries
