@@ -305,12 +305,20 @@
                       (ok #f "failed!  did not manage to filter results before preprocess")))]))
 
 (test-suite
- "return-value-task"
+ "task-return-value"
 
- (define result (task-return-value 7))
- (is-type result channel? "return-value-task returns a channel, as expected")
- (is (task.data (sync result)) 7 "the channel returned the specified value")
- )
+ (for ([val (list 7 "foobar" (task++ #:status 'failure #:data 'oops))]
+       [correct-status '(success success failure)]
+       [correct-data  (list 7 "foobar" 'oops)])
+   (let ([ch  (task-return-value val)])
+     (is-type ch
+              channel?
+              (format "(task-return-value ~v) returns a channel, as expected"
+                      val))
+     (define result (sync ch))
+     (is-type result task? "channel contains a task, as expected")
+     (is (task.status result) correct-status "the task had the expected status")
+     (is (task.data   result) correct-data   "the task had the expected data"))))
 
 (test-suite
  "get-task-result"

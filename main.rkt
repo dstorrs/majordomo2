@@ -320,24 +320,14 @@
           [(list 'update-data data)
            (loop retries (set-task-data the-task data) worker)]
           ;
-          [(list result the-task)
-           (finalize (set-task-status the-task result) result-ch
-                     #:flatten-nested-tasks?  flatten-nested-tasks?
-                     #:sort-op                sort-op
-                     #:sort-key               sort-key
-                     #:sort-cache-keys?       cache-keys?
-                     #:filter                 filter-func
-                     #:pre                    pre
-                     #:post                   post)]
-          ;
-          [(and value (or (== worker) #f))
+          [(and _ (or #f (== worker)))
            #:when (> retries 0) ; timeout or thread died, can be retried
            (kill-thread worker)
            (loop (sub1 retries)
                  the-task
                  (start-worker the-task))]
           ;
-          [(and value (or (== worker) #f)) ; timeout or thread died, no retries left
+          [(and _ (or #f (== worker))) ; timeout or thread died, no retries left
            (kill-thread worker)
            (finalize (set-task-status the-task 'timeout) result-ch
                      #:flatten-nested-tasks? flatten-nested-tasks?
@@ -346,7 +336,16 @@
                      #:sort-cache-keys?      cache-keys?
                      #:filter                filter-func
                      #:pre                   pre
-                     #:post                  post)])))))
+                     #:post                  post)]
+          [(list result (? task? the-task))
+           (finalize (set-task-status the-task result) result-ch
+                     #:flatten-nested-tasks?  flatten-nested-tasks?
+                     #:sort-op                sort-op
+                     #:sort-key               sort-key
+                     #:sort-cache-keys?       cache-keys?
+                     #:filter                 filter-func
+                     #:pre                    pre
+                     #:post                   post)])))))
   result-ch)
 
 ;;----------------------------------------------------------------------
@@ -360,12 +359,13 @@
 ; something other than 'success.
 (define/contract (task-return-value val)
   (-> any/c channel?)
-  (define ch (add-task (start-majordomo) identity val))
+
   (match val
     [(? task?)
-     (sync (thread-with-id (thunk (channel-put ch (task.data (sync ch))))))
+     (define ch (make-channel))     
+     (thread-with-id (thunk (channel-put ch val)))
      ch]
-    [_ ch]))
+    [_  (add-task (start-majordomo) identity val)]))
 
 ;;----------------------------------------------------------------------
 
