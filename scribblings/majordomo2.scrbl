@@ -540,7 +540,7 @@ Tasks are created inside, and managed by, a @racket[majordomo] instance.
 
 Consolidating previous information, the pipeline goes:
 
-@racketid[flatten] > @racketid[preprocess] > @racketid[sort] > @racketid[postprocess]
+@racketid[flatten] > @racketid[filter] > @racketid[preprocess] > @racketid[sort] > @racketid[postprocess]
 
 Each step in the pipeline is optional.
                        }
