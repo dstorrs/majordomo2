@@ -7,7 +7,7 @@
          racket/list
          "../main.rkt")
 
-(expect-n-tests 50)
+(expect-n-tests 67)
 
 (test-suite
  "majordomo"
@@ -329,4 +329,37 @@
      "get-task-result returns the value without having to explicitly sync and task.data")
 
  (stop-majordomo jarvis)
+ )
+
+(test-suite
+ "status checks"
+
+ (define s (task++ #:status 'success))
+ (define f (task++ #:status 'failure))
+ (define t (task++ #:status 'timeout))
+ (define u (task++ #:status 'unspecified))
+
+ (ok (and
+      (is-success? s)
+      (for/and ([func (list is-not-success? is-failure? is-timeout? is-unspecified-status?)])
+        (not (func s))))
+     "is-success? worked")
+
+ (ok (and (is-failure? f)
+          (is-not-success? f)
+          (for/and ([func (list is-success? is-timeout? is-unspecified-status?)])
+            (not (func f))))
+     "is-failure? worked")
+
+ (ok (and (is-timeout? t)
+          (is-not-success? t)
+          (for/and ([func (list is-success? is-failure? is-unspecified-status?)])
+            (not (func t))))
+     "is-timeout? worked")
+
+ (ok (and (is-unspecified-status? u)
+          (is-not-success? u)
+          (for/and ([func (list is-success? is-failure? is-timeout?)])
+            (not (func u))))
+     "is-unspecified-status? worked")
  )

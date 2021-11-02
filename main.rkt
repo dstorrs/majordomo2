@@ -21,6 +21,12 @@
          task?
          task-status/c
 
+         is-success?
+         is-not-success?
+         is-failure?
+         is-timeout?
+         is-unspecified-status?
+
          update-data
          keepalive
          success
@@ -47,6 +53,15 @@
            [(data   (hash))             any/c]
            ; private fields
            [(manager-ch (make-channel)) channel?]))
+
+(define/contract (is-success? t)     (-> task? boolean?) (equal? 'success (task.status t)))
+(define is-not-success? (negate is-success?))
+
+(define/contract (is-failure? t)     (-> task? boolean?) (equal? 'failure (task.status t)))
+(define/contract (is-timeout? t)     (-> task? boolean?) (equal? 'timeout (task.status t)))
+(define/contract (is-unspecified-status? t) (-> task? boolean?)
+  (equal? 'unspecified (task.status t)))
+
 
 (define/contract current-task
   (parameter/c (or/c #f task?))
@@ -362,7 +377,7 @@
 
   (match val
     [(? task?)
-     (define ch (make-channel))     
+     (define ch (make-channel))
      (thread-with-id (thunk (channel-put ch val)))
      ch]
     [_  (add-task (start-majordomo) identity val)]))
