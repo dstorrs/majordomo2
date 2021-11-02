@@ -440,6 +440,14 @@ Some operations are common enough that it's worth having a short form to avoid b
            [(task-data [the-task task?]) symbol?])
           ]{Accessors for the @racketid[data] field of a @racket[task] struct. See @secref["task-data"] for how the data field is used.}
 
+
+@defproc*[([(is-success? [the-task task?]) boolean?]
+           [(is-not-success? [the-task task?]) boolean?]
+           [(is-failure? [the-task task?]) boolean?]
+           [(is-timeout? [the-task task?]) boolean?]
+           [(is-unspecified-status? [the-task task?]) boolean?])
+          ]{Functions for testing the status of a @racketid[task] struct. @racket[is-not-success?] returns @racket[#t] if the task has any status other than @racket['success].}
+
 @defproc[(set-task-id [the-task task?] [val symbol?]) task?]{Functional setter for the @racketid[id] field.}
 
 @defproc[(set-task-status [the-task task?] [val task-status/c]) task?]{Functional setter for the @racketid[status] field.}
