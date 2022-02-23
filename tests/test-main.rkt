@@ -29,12 +29,12 @@
    (and (equal? (task.id     t1) (task.id     t2))
         (equal? (task.data   t1) (task.data   t2))))
 
- ; If t1 data is (not/c list? task?) then t1 does not does not change
+ ; If t1 data is (not/c list? task?) then t1 does not change
  (ok (te? (flatten-nested-tasks (t 'x 1))
           (t 'x 1))
      "if task data is neither task nor list, task is unchanged")
 
- ; If t1 data is (listof (not/c task?)) then t1 does not does not change
+ ; If t1 data is (listof (not/c task?)) then t1 does not change
  (ok (te? (flatten-nested-tasks (t 'x '(a b)))
           (t 'x '(a b)))
      "if task data is (listof (not/c task?)), task is unchanged")
