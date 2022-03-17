@@ -297,7 +297,8 @@
         (thread-with-id
          (thunk
           (log-majordomo2-debug "~a Starting worker thread for:\n\t action: ~v\n\targs: ~v" (thread-id) action args)
-          (with-handlers ([any/c failure])
+          (with-handlers ([exn:break? raise]
+                          [any/c failure])
 
             ; The arguments are passed into a rest arg, meaning that they come to us as a
             ; list and we therefore need to use 'apply' to unwrap them so that the action
