@@ -3,6 +3,7 @@
 (require racket/contract/base
          racket/contract/region
          racket/function
+         racket/list
          racket/match
          struct-plus-plus
          thread-with-id)
@@ -46,12 +47,13 @@
           ([(id    (gensym "majordomo-"))  symbol?] ; makes it human-identifiable
            [(cust  (make-custodian))       custodian?]))
 
-(define task-status/c (or/c 'success 'failure 'unspecified 'timeout))
+(define task-status/c (or/c 'success 'failure 'unspecified 'timeout 'mixed))
 (struct++ task
           ([(id     (gensym "task-"))   symbol?]
            [(status 'unspecified)       task-status/c]
            [(data   (hash))             any/c]
            ; private fields
+           [(finalized? #f)             boolean?]
            [(manager-ch (make-channel)) channel?]))
 
 (define/contract (is-success? t)     (-> task? boolean?) (equal? 'success (task.status t)))
@@ -82,8 +84,6 @@
 
 ;;----------------------------------------------------------------------
 
-(define finalized? (make-parameter #f))
-
 (define (update-data data)
   (log-majordomo2-debug "~a: update-data with ~v" (thread-id) data)
   (define the-task (current-task))
@@ -96,25 +96,27 @@
 
 (define (success [data the-unsupplied-arg])
   (log-majordomo2-debug "~a: success! data is: ~v" (thread-id) data)
-  (finalized? #t)
   (finish-with 'success
-               (if (unsupplied-arg? data)
-                   (current-task)
-                   (set-task-data (current-task) data))))
+               (let* ([the-task (set-task-finalized? (current-task) #t)]
+                      [the-task (if (unsupplied-arg? data)
+                                    the-task
+                                    (set-task-data the-task data))])
+                 the-task)))
 
 (define (failure [data the-unsupplied-arg])
   (log-majordomo2-debug "~a: failure! data is: ~v" (thread-id) data)
-  (finalized? #t)
   (finish-with 'failure
-               (if (unsupplied-arg? data)
-                   (current-task)
-                   (set-task-data (current-task) data))))
+               (let* ([the-task (set-task-finalized? (current-task) #t)]
+                      [the-task (if (unsupplied-arg? data)
+                                    the-task
+                                    (set-task-data the-task data))])
+                 the-task)))
 
 (define/contract (finish-with status the-task)
   (-> symbol? task? any)
-  (log-majordomo2-debug "~a: finish-with status: ~v" (thread-id) status)
+  (log-majordomo2-debug "~a: finish-with status: ~v and data: ~v" (thread-id) status (task.data the-task))
   (channel-put (task.manager-ch the-task)
-               (list status the-task)))
+               (list status (set-task-status the-task status))))
 
 ;;----------------------------------------------------------------------
 
@@ -140,7 +142,7 @@
       #:flatten-nested-tasks? boolean?
       any)
 
-  (log-majordomo2-debug "~a: entering finalize" (thread-id))
+  (log-majordomo2-debug "~a: entering finalize for task id: ~a" (thread-id) (task.id the-task))
   (define raw-data
     (task.data (if flatten-nested-tasks?
                    (flatten-nested-tasks the-task)
@@ -160,8 +162,8 @@
          [#f raw-data]
          [_  (filter filter-func raw-data)]))
 
-     (log-majordomo2-debug "~a: putting results on result-ch. filtered data is: ~v"
-                           (thread-id) filtered-data)
+     (log-majordomo2-debug "~a: putting results on result-ch. status is: ~a. filtered data is: ~v"
+                           (thread-id) (task.status the-task) filtered-data)
 
      (channel-put result-ch
                   (set-task-data the-task
@@ -170,23 +172,23 @@
                                     (cond [sort-op (sort data          sort-op
                                                          #:key         sort-key
                                                          #:cache-keys? cache-keys?)]
-                                          [else    data]))))))))
+                                          [else        data]))))))))
 
 
 ;;----------------------------------------------------------------------
 
 (define/contract (add-task jarvis action
-                           #:keepalive             [keepalive   5]
-                           #:retries               [retries     3]
-                           #:parallel?             [parallel?   #f]
-                           #:unwrap?               [unwrap?     #f]
+                           #:keepalive             [keepalive             5]
+                           #:retries               [retries               3]
+                           #:parallel?             [parallel?             #f]
+                           #:unwrap?               [unwrap?               #f]
                            #:flatten-nested-tasks? [flatten-nested-tasks? #f]
-                           #:filter                [filter-func #f]
-                           #:pre                   [pre         identity]
-                           #:sort-op               [sort-op     #f]
-                           #:sort-key              [sort-key    identity]
-                           #:sort-cache-keys?      [cache-keys? #f]
-                           #:post                  [post        identity]
+                           #:filter                [filter-func           #f]
+                           #:pre                   [pre                   identity]
+                           #:sort-op               [sort-op               #f]
+                           #:sort-key              [sort-key              identity]
+                           #:sort-cache-keys?      [cache-keys?           #f]
+                           #:post                  [post                  identity]
                            .                       args)
   (->* (majordomo? (unconstrained-domain-> any/c))
        (#:keepalive             (and/c real? (not/c negative?))
@@ -214,23 +216,34 @@
          ;  NOTE: In some cases it will be easier for the customer to pass args as a list
          ;  instead of as separate arguments, for example when the args are generated via
          ;  a 'map'.  In that case they can use #:unwrap? #t to have us unwrap it for them.
-         (define subtask-channels
-           (for/list ([arg (in-list (if unwrap? (car args) args))])
-             (add-task-helper jarvis
-                              action
-                              (list arg)
-                              (make-channel)
-                              #:flatten-nested-tasks? flatten-nested-tasks?
-                              #:keepalive             keepalive
-                              #:retries               retries
-                              #:parallel?             #f)))
+         (define subtasks
+           (map sync
+                (for/list ([arg (in-list (if unwrap? (car args) args))])
+                  (add-task-helper jarvis
+                                   action
+                                   (list arg)
+                                   (make-channel)
+                                   #:flatten-nested-tasks? flatten-nested-tasks?
+                                   #:keepalive             keepalive
+                                   #:retries               retries
+                                   #:parallel?             #f))))
 
-         ; Collect all the results from the subtasks
-         (define raw-data (map (compose task.data sync) subtask-channels))
+         ; Collect the statuses (stati? whatever) from the subtasks
+         (define statuses (map task.status subtasks))
+         (log-majordomo2-debug "raw statuses before dedup: ~v" statuses)
+
+         (define final-status
+           (match (remove-duplicates statuses)
+             ['()                                (raise "no statuses?")]
+             [(list 'success)                    'success]
+             [(list 'failure)                    'failure]
+             [(list-no-order 'success other ...) 'mixed]
+             [(list-no-order 'mixed   other ...) 'mixed]
+             [_                                  'failure]))
 
          ; Finalize them in another thread, since finalize uses channel-put, which is
          ; blocking.
-         (thread-with-id (thunk (finalize (task++ #:data raw-data)
+         (thread-with-id (thunk (finalize (task++ #:data subtasks #:status final-status)
                                           result-ch
                                           #:flatten-nested-tasks? flatten-nested-tasks?
                                           #:sort-op               sort-op
@@ -259,6 +272,7 @@
                           #:pre                   pre
                           #:post                  post)]))
 
+;;----------------------------------------------------------------------
 
 (define/contract (add-task-helper jarvis action args result-ch
                                   #:flatten-nested-tasks? [flatten-nested-tasks? #f]
@@ -316,9 +330,15 @@
             ;   (add-task jarvis foo 1 2 3)     ; the 'args' binding contains '(1 2 3)
             ;   (add-task jarvis foo '(1 2 3))  ; the 'args' binding contains '((1 2 3))
             ;
-            (define result (apply action (if unwrap? (car args) args)))
-            (when (not (finalized?))
-              (success result)))))))
+            (log-majordomo2-debug "~a about to apply action ~v with args ~v" (thread-id) action args)
+            (with-handlers ([exn:break? raise]
+                            [any/c (λ (e)
+                                     (log-majordomo2-debug "~a caught: ~v" (thread-id) e)
+                                     (failure e))])
+              (define result (apply action (if unwrap? (car args) args)))
+              (log-majordomo2-debug "~a result was: ~v" (thread-id) result)
+              (when (not (task.finalized? (current-task)))
+                (success result))))))))
 
     (define worker (start-worker the-task))
 
@@ -353,8 +373,9 @@
                      #:filter                filter-func
                      #:pre                   pre
                      #:post                  post)]
-          [(list result (? task? the-task))
-           (finalize (set-task-status the-task result) result-ch
+          [(list status (? task? the-task))
+           (log-majordomo2-debug "~a task finished with status ~a" (thread-id) status)
+           (finalize (set-task-status the-task status) result-ch
                      #:flatten-nested-tasks?  flatten-nested-tasks?
                      #:sort-op                sort-op
                      #:sort-key               sort-key

@@ -5,9 +5,12 @@
          racket/contract/base
          racket/function
          racket/list
+         racket/match
          "../main.rkt")
 
-(expect-n-tests 67)
+(expect-n-tests 74)
+
+(define-logger majordomo2-tests)
 
 (test-suite
  "majordomo"
@@ -71,9 +74,16 @@
         [with-flatten    (sync (add-task jarvis make-task 0 1 2
                                          #:parallel? #t
                                          #:flatten-nested-tasks? #t))])
-   (is (map task.data (task.data without-flatten))
+   (log-majordomo2-tests-debug "without flatten, results were: ~v" without-flatten)
+   (is-type without-flatten task? "got a single task")
+   (define data (task.data without-flatten))
+   (ok (andmap task? data) "all data items were tasks, yay!")
+
+   (define subdata (map task.data data))
+   (log-majordomo2-tests-debug "subdata is ~v" subdata)
+   (is (map task.data subdata)
        '(0 1 2)
-       "without #:flatten-nested-tasks? we get a nested task, as expected")
+       "without #:flatten-nested-tasks? we get three double-nested tasks, as expected")
 
    (is (task.data with-flatten)
        '(0 1 2)
@@ -81,6 +91,7 @@
 
    (stop-majordomo jarvis))
  )
+
 
 (test-suite
  "add-task"
@@ -103,34 +114,32 @@
  (let ()
    (define (no-declaration) 'ok)
    (define result (sync (add-task jarvis no-declaration)))
-   (is-type result task? "result is a task")
-   (is (task.data result) 'ok "functions that exit cleanly do not retry indefinitely"))
+   (is (task.data result) 'ok "functions that exit cleanly do not retry indefinitely and are considered successful"))
 
  ;;----------------------------------------------------------------------
 
  ;; If the task used (success v) then v should be the data on the task that is returned
  (let ()
-   (define (add-to-6 a b c)
+   (define (succeed-at-add-up a b c)
      (success (+ a b c)))
-   (define result (sync (add-task jarvis add-to-6 1 2 3)))
-   (is (task.data result) 6 "add-to-6 gave correct data")
-   (is (task.status result) 'success "add-to-6 gave correct status"))
+   (define result (sync (add-task jarvis succeed-at-add-up 1 2 3)))
+   (is (task.status result) 'success "add-to-6 gave correct status")
+   (is (task.data   result) 6        "add-to-6 gave correct data"))
 
  ;; If the task used (failure v) then v should be the data on the task that is returned
  (let ()
-   (define (fail-to-6 a b c)
+   (define (fail-at-add-up a b c)
      (failure (+ a b c)))
-   (define result (sync (add-task jarvis fail-to-6 1 2 3)))
-   (is (task.data result) 6 "fail-to-6 gave correct data")
-   (is (task.status result) 'failure "fail-to-6 gave correct status"))
+   (define result (sync (add-task jarvis fail-at-add-up 1 2 3)))
+   (is (task.status result) 'failure "fail-to-6 gave correct status")
+   (is (task.data   result) 6        "fail-to-6 gave correct data"))
 
  ;;----------------------------------------------------------------------
 
  ;;  If a task throws, the value thrown becomes the data
- (define ((throw-thing val)) (raise val))
  (for ([v (list 1 'oops "fail" (exn "oops" (current-continuation-marks)))]
        [type '(int sym str exn)])
-   (is (task.data (sync (add-task jarvis (throw-thing v))))
+   (is (task.data (sync (add-task jarvis (thunk (raise v)))))
        v
        (format "as expected, task threw a ~a" type)))
 
@@ -199,16 +208,68 @@
  )
 
 (test-suite
- "tasks can be automatically parallelized"
+ "tasks can be automatically parallelized; their status will be set appropriately"
 
- (define result (sync (add-task (start-majordomo)
-                                add1
-                                1 2 3 4 5
-                                #:parallel? #t
-                                #:sort-op <)))
- (is (task.data result)
-     '(2 3 4 5 6)
-     "Successfully parallelized"))
+
+ (let ([result (sync (add-task (start-majordomo)
+                               add1
+                               2 1 4 5 3 6
+                               #:parallel? #t
+                               #:sort-op <
+                               #:sort-key task.data))])
+
+   (ok (is-success? result) "parallelized task succeeded" )
+   (define subtasks (task.data result))
+   (ok (andmap task? subtasks) "as expected, data from a parallel run is subtasks")
+   
+   (is (map task.data subtasks)
+       '(2 3 4 5 6 7)
+       "sorting worked with a parallelized task"))
+
+
+ (log-majordomo2-tests-debug "about to do the parallel raise test")
+ (let* ([result (sync (add-task (start-majordomo)
+                                (λ (arg) (raise-arguments-error 'oops "arg" arg))
+                                1 2 3
+                                #:parallel? #t))]
+        [status           (task.status result)]
+        [top-level-data   (task.data   result)])
+
+   (log-majordomo2-tests-debug (format "parallel task had status: ~a" status))
+   (log-majordomo2-tests-debug (format "parallel task had top level data: ~a" top-level-data))
+
+   (is status 'failure "as expected, parallelized task is 'failure because all subtasks failed" )
+
+   (ok (match top-level-data
+         [(list (? task?) (? task?) (? task?)) #t]
+         [_                                    #f])
+       "as expected, data is three subtasks")
+   (is (length top-level-data) 3 "got number of expected data items at top level")
+   (ok (andmap task? top-level-data) "all data items were tasks, as expected")
+   (ok (andmap (compose1 exn:fail? task.data) top-level-data) 
+       "as expected, all subtasks had exn:fail for data"))
+
+
+
+ (log-majordomo2-tests-debug "HERE A. about to do mixed-status test with exns")
+
+ (let ([result (sync (add-task (start-majordomo)
+                               (λ (x)
+                                 (when (even? x)
+                                   (raise-arguments-error 'thingy "" x))
+                                 x)
+                               1 2 3 4 5
+                               #:parallel?             #t
+                               #:flatten-nested-tasks? #t))])
+   (match-define (struct* task ([status status] [data data]))
+     result)
+   (log-majordomo2-tests-debug "HERE. status: ~a. data: ~v" status data)
+   (is status 'mixed "parallel tasks where some succeed and some fail have status 'mixed")
+   (ok (match data
+         [(list-no-order 1 3 5 (? exn:fail?) (? exn:fail?)) #t]
+         [_                                                 #f])
+       "parallel tasks with mixed status return all the data unless told otherwise"))
+ )
 
 (test-suite
  "tasks can receive a list instead of separate args if desired"
@@ -231,19 +292,6 @@
          (define result (task.data (sync (add-task jarvis foo '(1 2 3) #:unwrap? #t))))
          (is result 6 "(foo) works when you pass it a list instead of separate args but you use #:unwrap? #t")
          )
-       (let ()
-         (is (task.data (sync (add-task jarvis + 1 2 3 #:parallel? #t)))
-             '(1 2 3)
-             "(add-task jarvis + 1 2 3 #:parallel? #t) returns '(1 2 3")
-
-         (define args '(1 2 3))
-         (is-type (first (task.data (sync (add-task jarvis + args #:parallel? #t))))
-                  exn:fail:contract?
-                  "(add-task jarvis + '(1 2 3) #:parallel? #t) blows up, as expected")
-
-         (is (task.data (sync (add-task jarvis + args #:parallel? #t #:unwrap? #t)))
-             '(1 2 3)
-             "(add-task jarvis + '(1 2 3) #:parallel? #t #:unwrap? #t) correctly returns '(1 2 3)"))
        ]
       [finally (stop-majordomo jarvis)])
  )
