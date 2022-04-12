@@ -579,14 +579,13 @@ Each step in the pipeline is optional.
 
 @section[#:tag "parallel-processing"]{Parallel Processing}
 
-As shown in the @secref["running-in-parallel"] demonstration, tasks can be parallelized simply by passing @racket[#:parallel? #t].  In this case @racket[add-task] will call itself recursively, creating subtasks and passing each of them one of the arguments in turn.  The main task will then wait for the subtasks to complete, aggregate their results into a list, and treat it as normal by running it through some or all of flattening, preprocessing, sorting, and postprocessing.  The subtasks will be run with the same @racket[#:keepalive] and @racket[#:retries] values as the main tasks but everything else will be the default, meaning that all preprocessing and sorting will happen in the main task.
+As shown in the @secref["running-in-parallel"] demonstration, tasks can be parallelized simply by passing @racket[#:parallel? #t].  In this case @racket[add-task] will call itself recursively, creating subtasks and passing each of them one of the arguments in turn.  The main task will then wait for the subtasks to complete, aggregate the subtasks into a list, and treat it as normal by running it through some or all of flattening, preprocessing, sorting, and postprocessing.  The subtasks will be run with the same @racket[#:keepalive] and @racket[#:retries] values as the main tasks but everything else will be the default, meaning that all preprocessing and sorting will happen in the main task.
 
 Caveats:
 
 @itemlist[
-          @item{If your function returns a list and you run it in parallel mode then you will end up with a list of one-element lists.  If this isn't what you want then you can use @racket[#:pre (curry apply append)] to resolve it back into a single list.}
+@item{The items in the main task's @racketid[data] field will be @racket[task] structs, not the data values in those task structs.}
                @item{Obviously, your subtasks are running in separate threads.  Their @racket[current-task] will not be the same as the one in the original task.}
-               @item{Only the data from the subtasks is returned, meaning that the status values are unavailable to the final customer.  One solution to this is to include the status into the data field or to throw an exception.  Better solutions are solicited.}
                ]
 
 @section{Notes}
