@@ -11,7 +11,9 @@
          majordomo?
          majordomo.id
          majordomo-id
-
+         majordomo.max-workers
+         majordomo-max-workers
+         
          current-task
          task++  task
          task.id       task-id
@@ -45,7 +47,7 @@
 (struct++ majordomo
           ([(id    (gensym "majordomo-"))             symbol?] ; makes it human-identifiable
            [(cust  (make-custodian))                  custodian?]
-           [(max-tasks +inf.0)                        (or/c +inf.0 exact-positive-integer?)]
+           [(max-workers +inf.0)                      (or/c +inf.0 exact-positive-integer?)]
            [(num-tasks-running 0)                     natural-number/c]
            [(queued-tasks (make-queue))               queue?]
            [(worker-listener-ch (make-async-channel)) async-channel?]
@@ -69,7 +71,7 @@
 ;   - signal new task on worker-listener-ch
 ;
 ; - check-workers
-;  - compare num-tasks-running to max-tasks
+;  - compare num-tasks-running to max-workers
 ;  - when there is room for another task,
 ;    - start-worker
 ;    - call check-workers
@@ -102,12 +104,12 @@
 
 ;;----------------------------------------------------------------------
 
-(define/contract (start-majordomo #:max-tasks [max-tasks +inf.0])
-  (->* () (#:max-tasks (or/c +inf.0 exact-positive-integer?)) majordomo?)
+(define/contract (start-majordomo #:max-workers [max-workers +inf.0])
+  (->* () (#:max-workers (or/c +inf.0 exact-positive-integer?)) majordomo?)
   (log-majordomo2-debug "~a: starting majordomo..." (thread-id))
 
   ; create jarvis
-  (define jarvis (majordomo++ #:max-tasks max-tasks))
+  (define jarvis (majordomo++ #:max-workers max-workers))
 
   ; tell jarvis to start managing workers
   (thread-with-id
@@ -119,10 +121,10 @@
          ; a new task is being submitted. add the promise to the queue, run a worker if we can
          (match-define (struct* majordomo ([queued-tasks      queued-tasks]
                                            [num-tasks-running num-tasks-running]
-                                           [max-tasks         max-tasks]))
+                                           [max-workers       max-workers]))
            jarvis)
          (define new-tasks  (queue-add queued-tasks task-promise))
-         (cond [(< num-tasks-running max-tasks)
+         (cond [(< num-tasks-running max-workers)
                 (define-values (next-task-promise new-queue) (queue-remove new-tasks))
                 (set-majordomo-queued-tasks! jarvis new-queue)
                 (set-majordomo-num-tasks-running! jarvis (add1 num-tasks-running))
@@ -135,7 +137,7 @@
          ; queue if there are any waiting tasks
          (match-define (struct* majordomo ([queued-tasks      queued-tasks]
                                            [num-tasks-running num-tasks-running]
-                                           [max-tasks         max-tasks]))
+                                           [max-workers       max-workers]))
            jarvis)
          (set-majordomo-num-tasks-running! jarvis (sub1 num-tasks-running))
          (when (not (queue-empty? queued-tasks))
