@@ -2,13 +2,11 @@
 
 (require handy/test-more
          handy/try
-         racket/contract/base
-         racket/function
-         racket/list
-         racket/match
+         racket/require
+         (multi-in racket (async-channel contract/base function list match set))
          "../main.rkt")
 
-(expect-n-tests 74)
+(expect-n-tests 78)
 
 (define-logger majordomo2-tests)
 
@@ -221,7 +219,7 @@
    (ok (is-success? result) "parallelized task succeeded" )
    (define subtasks (task.data result))
    (ok (andmap task? subtasks) "as expected, data from a parallel run is subtasks")
-   
+
    (is (map task.data subtasks)
        '(2 3 4 5 6 7)
        "sorting worked with a parallelized task"))
@@ -246,7 +244,7 @@
        "as expected, data is three subtasks")
    (is (length top-level-data) 3 "got number of expected data items at top level")
    (ok (andmap task? top-level-data) "all data items were tasks, as expected")
-   (ok (andmap (compose1 exn:fail? task.data) top-level-data) 
+   (ok (andmap (compose1 exn:fail? task.data) top-level-data)
        "as expected, all subtasks had exn:fail for data"))
 
 
@@ -410,4 +408,46 @@
           (for/and ([func (list is-success? is-failure? is-timeout?)])
             (not (func u))))
      "is-unspecified-status? worked")
+ )
+
+(test-suite
+ "task limits"
+
+ (define (run id ch)
+   (let loop ([times-left 20])
+     (async-channel-put ch (list id 'running))
+     (when (> times-left 0)
+       (sleep 50/1000)
+       (keepalive)
+       (loop (sub1 times-left))))
+   (async-channel-put ch (list id 'done)))
+
+ (define (max-running jarvis)
+   (define ch (make-async-channel))
+
+   (for ([i 10])
+     (add-task jarvis run (format "job~a" i) ch))
+
+   (let loop ([running (set)]
+              [max-running 0])
+     (match (sync ch)
+       [(list id 'running)
+        (define new-running (set-add running id))
+        (define count (set-count new-running))
+        (loop new-running (if (> count max-running) count max-running))]
+       ;
+       [(list id 'done)
+        (define new-running (set-remove running id))
+        (define count (set-count new-running))
+        (if (zero? (set-count new-running))
+            max-running
+            (loop new-running (if (> count max-running) count max-running)))]
+       )))
+
+ (ok (> (max-running (start-majordomo)) 5) "by default, all tasks run more or less at once")
+ ; >5 because maybe not 10 simultaneous tasks
+
+ (is (max-running (start-majordomo #:max-tasks 1)) 1 "#:max-tasks 1 stayed limited to 1 task at a time")
+ (is (max-running (start-majordomo #:max-tasks 3)) 3 "#:max-tasks 3 ran up to 3 tasks at a time")
+
  )

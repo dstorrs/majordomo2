@@ -1,10 +1,8 @@
 #lang racket/base
 
-(require racket/contract/base
-         racket/contract/region
-         racket/function
-         racket/list
-         racket/match
+(require racket/require
+         (multi-in racket (async-channel  contract/base  contract/region  function  list  match promise))
+         queue
          struct-plus-plus
          thread-with-id)
 
@@ -43,9 +41,42 @@
 
 ;;----------------------------------------------------------------------
 
+
 (struct++ majordomo
-          ([(id    (gensym "majordomo-"))  symbol?] ; makes it human-identifiable
-           [(cust  (make-custodian))       custodian?]))
+          ([(id    (gensym "majordomo-"))             symbol?] ; makes it human-identifiable
+           [(cust  (make-custodian))                  custodian?]
+           [(max-tasks +inf.0)                        (or/c +inf.0 exact-positive-integer?)]
+           [(num-tasks-running 0)                     natural-number/c]
+           [(queued-tasks (make-queue))               queue?]
+           [(worker-listener-ch (make-async-channel)) async-channel?]
+           [(task-manager-thd #f)                     (or/c #f thread?)]
+           )
+          (#:omit-reflection)
+          #:mutable)
+
+; on startup, create a thread that monitors worker-listener-ch
+; - workers signal on that channel when they stop/start and when new tasks are queued
+; - on receiving start
+;   - increment num-workers-running
+; - on receiving stop
+;   - decrement num-workers-running
+; - on receiving new-task
+;   - start-worker
+;
+
+; - add-task
+;   - add (delay <thing>) to the queued-tasks
+;   - signal new task on worker-listener-ch
+;
+; - check-workers
+;  - compare num-tasks-running to max-tasks
+;  - when there is room for another task,
+;    - start-worker
+;    - call check-workers
+;
+; - start-worker
+;  - pop the queue
+;  - force the promise
 
 (define task-status/c (or/c 'success 'failure 'unspecified 'timeout 'mixed))
 (struct++ task
@@ -71,16 +102,59 @@
 
 ;;----------------------------------------------------------------------
 
-(define (start-majordomo)
+(define/contract (start-majordomo #:max-tasks [max-tasks +inf.0])
+  (->* () (#:max-tasks (or/c +inf.0 exact-positive-integer?)) majordomo?)
   (log-majordomo2-debug "~a: starting majordomo..." (thread-id))
-  (majordomo++))
+
+  ; create jarvis
+  (define jarvis (majordomo++ #:max-tasks max-tasks))
+
+  ; tell jarvis to start managing workers
+  (thread-with-id
+   (thunk
+    (define listener-ch (majordomo.worker-listener-ch jarvis))
+    (let loop ()
+      (match (sync listener-ch)
+        [(list 'add task-promise)
+         ; a new task is being submitted. add the promise to the queue, run a worker if we can
+         (match-define (struct* majordomo ([queued-tasks      queued-tasks]
+                                           [num-tasks-running num-tasks-running]
+                                           [max-tasks         max-tasks]))
+           jarvis)
+         (define new-tasks  (queue-add queued-tasks task-promise))
+         (cond [(< num-tasks-running max-tasks)
+                (define-values (next-task-promise new-queue) (queue-remove new-tasks))
+                (set-majordomo-queued-tasks! jarvis new-queue)
+                (set-majordomo-num-tasks-running! jarvis (add1 num-tasks-running))
+                (force next-task-promise)]
+               [else
+                (set-majordomo-queued-tasks! jarvis new-tasks)])]
+        ;
+        [(list 'stop id)
+         ; a worker has stopped.  there is now room for another, so we can pull from the
+         ; queue if there are any waiting tasks
+         (match-define (struct* majordomo ([queued-tasks      queued-tasks]
+                                           [num-tasks-running num-tasks-running]
+                                           [max-tasks         max-tasks]))
+           jarvis)
+         (set-majordomo-num-tasks-running! jarvis (sub1 num-tasks-running))
+         (when (not (queue-empty? queued-tasks))
+           (define-values (next-task-promise new-queue) (queue-remove (majordomo.queued-tasks jarvis)))
+           (set-majordomo-queued-tasks! jarvis new-queue)
+           (set-majordomo-num-tasks-running! jarvis num-tasks-running)
+           (force next-task-promise))])
+      (loop))))
+
+  ; return jarvis
+  jarvis)
 
 ;;----------------------------------------------------------------------
 
 (define/contract (stop-majordomo jarvis)
   (-> majordomo? any)
   (log-majordomo2-debug "~a: stopping majordomo..." (thread-id))
-  (custodian-shutdown-all (majordomo.cust jarvis)))
+  (let ([jarvis (set-majordomo-queued-tasks jarvis (make-queue))]) ; let go of the jobs queue to help the GC
+    (custodian-shutdown-all (majordomo.cust jarvis))))
 
 ;;----------------------------------------------------------------------
 
@@ -299,90 +373,98 @@
         #:pre                   procedure?
         #:post                  procedure?)
        channel?)
+  (define control-ch (majordomo.worker-listener-ch jarvis))
 
-  (parameterize ([current-custodian (majordomo.cust jarvis)])
-    (match-define (and the-task (struct* task ([manager-ch manager-ch])))
-      (task++))
+  (async-channel-put
+   control-ch
+   (list 'add
+         (delay
+           (parameterize ([current-custodian (majordomo.cust jarvis)])
+             (match-define (and the-task (struct* task ([manager-ch manager-ch])))
+               (task++))
 
-    ; worker
-    (define (start-worker the-task)
-      (parameterize ([current-custodian (make-custodian)]
-                     [current-task      the-task])
-        (thread-with-id
-         (thunk
-          (log-majordomo2-debug "~a Starting worker thread for:\n\t action: ~v\n\targs: ~v" (thread-id) action args)
-          (with-handlers ([exn:break? raise]
-                          [any/c failure])
+             ; worker
+             (define (start-worker the-task)
+               (parameterize ([current-custodian (make-custodian)]
+                              [current-task      the-task])
+                 (thread-with-id
+                  (thunk
+                   (log-majordomo2-debug "~a Starting worker thread for:\n\t action: ~v\n\targs: ~v" (thread-id) action args)
+                   (with-handlers ([exn:break? raise]
+                                   [any/c failure])
 
-            ; The arguments are passed into a rest arg, meaning that they come to us as a
-            ; list and we therefore need to use 'apply' to unwrap them so that the action
-            ; can get them as individual items.
-            ;
-            ; In some cases the function expects individual arguments but it's more
-            ; convenient for the customer to pass it as a list, e.g. because the args were
-            ; generated via a 'map'.  In this case we need to unwrap it twice and we
-            ; expect that 'args' is a one-element list where the element is a list
-            ; containing the actual args.
-            ;
-            ; Example:
-            ;
-            ;   (define (foo a b c) (+ a b c))
-            ;   (add-task jarvis foo 1 2 3)     ; the 'args' binding contains '(1 2 3)
-            ;   (add-task jarvis foo '(1 2 3))  ; the 'args' binding contains '((1 2 3))
-            ;
-            (log-majordomo2-debug "~a about to apply action ~v with args ~v" (thread-id) action args)
-            (with-handlers ([exn:break? raise]
-                            [any/c (λ (e)
-                                     (log-majordomo2-debug "~a caught: ~v" (thread-id) e)
-                                     (failure e))])
-              (define result (apply action (if unwrap? (car args) args)))
-              (log-majordomo2-debug "~a result was: ~v" (thread-id) result)
-              (when (not (task.finalized? (current-task)))
-                (success result))))))))
+                     ; The arguments are passed into a rest arg, meaning that they come to us as a
+                     ; list and we therefore need to use 'apply' to unwrap them so that the action
+                     ; can get them as individual items.
+                     ;
+                     ; In some cases the function expects individual arguments but it's more
+                     ; convenient for the customer to pass it as a list, e.g. because the args were
+                     ; generated via a 'map'.  In this case we need to unwrap it twice and we
+                     ; expect that 'args' is a one-element list where the element is a list
+                     ; containing the actual args.
+                     ;
+                     ; Example:
+                     ;
+                     ;   (define (foo a b c) (+ a b c))
+                     ;   (add-task jarvis foo 1 2 3)     ; the 'args' binding contains '(1 2 3)
+                     ;   (add-task jarvis foo '(1 2 3))  ; the 'args' binding contains '((1 2 3))
+                     ;
+                     (log-majordomo2-debug "~a about to apply action ~v with args ~v" (thread-id) action args)
+                     (with-handlers ([exn:break? raise]
+                                     [any/c (λ (e)
+                                              (log-majordomo2-debug "~a caught: ~v" (thread-id) e)
+                                              (failure e))])
+                       (define result (apply action (if unwrap? (car args) args)))
+                       (log-majordomo2-debug "~a result was: ~v" (thread-id) result)
+                       (when (not (task.finalized? (current-task)))
+                         (success result))))))))
 
-    (define worker (start-worker the-task))
+             (define worker (start-worker the-task))
 
-    ; manager
-    (thread-with-id
-     (thunk
-      (log-majordomo2-debug "~a Starting manager thread for action ~v" (thread-id) action)
-      (let loop ([retries  retries]
-                 [the-task the-task]
-                 [worker   worker])
-        (match (sync/timeout keepalive manager-ch worker)
-          ['keepalive
-           (loop retries the-task worker)]
-          ;
-          [(list 'update-data data)
-           (loop retries (set-task-data the-task data) worker)]
-          ;
-          [(and _ (or #f (== worker)))
-           #:when (> retries 0) ; timeout or thread died, can be retried
-           (kill-thread worker)
-           (loop (sub1 retries)
-                 the-task
-                 (start-worker the-task))]
-          ;
-          [(and _ (or #f (== worker))) ; timeout or thread died, no retries left
-           (kill-thread worker)
-           (finalize (set-task-status the-task 'timeout) result-ch
-                     #:flatten-nested-tasks? flatten-nested-tasks?
-                     #:sort-op               sort-op
-                     #:sort-key              sort-key
-                     #:sort-cache-keys?      cache-keys?
-                     #:filter                filter-func
-                     #:pre                   pre
-                     #:post                  post)]
-          [(list status (? task? the-task))
-           (log-majordomo2-debug "~a task finished with status ~a" (thread-id) status)
-           (finalize (set-task-status the-task status) result-ch
-                     #:flatten-nested-tasks?  flatten-nested-tasks?
-                     #:sort-op                sort-op
-                     #:sort-key               sort-key
-                     #:sort-cache-keys?       cache-keys?
-                     #:filter                 filter-func
-                     #:pre                    pre
-                     #:post                   post)])))))
+             ; manager thread
+             (thread-with-id
+              (thunk
+               (log-majordomo2-debug "~a Starting manager thread for action ~v" (thread-id) action)
+               (let loop ([retries  retries]
+                          [the-task the-task]
+                          [worker   worker])
+                 (match (sync/timeout keepalive manager-ch worker)
+                   ['keepalive
+                    (loop retries the-task worker)]
+                   ;
+                   [(list 'update-data data)
+                    (loop retries (set-task-data the-task data) worker)]
+                   ;
+                   [(or #f (== worker))
+                    #:when (> retries 0) ; timeout or thread died, can be retried
+                    (kill-thread worker)
+                    (loop (sub1 retries)
+                          the-task
+                          (start-worker the-task))]
+                   ;
+                   [(or #f (== worker)) ; timeout or thread died, no retries left
+                    (kill-thread worker)
+                    (finalize (set-task-status the-task 'timeout) result-ch
+                              #:flatten-nested-tasks? flatten-nested-tasks?
+                              #:sort-op               sort-op
+                              #:sort-key              sort-key
+                              #:sort-cache-keys?      cache-keys?
+                              #:filter                filter-func
+                              #:pre                   pre
+                              #:post                  post)]
+                   [(list status (? task? the-task))
+                    (log-majordomo2-debug "~a task finished with status ~a" (thread-id) status)
+                    (finalize (set-task-status the-task status) result-ch
+                              #:flatten-nested-tasks?  flatten-nested-tasks?
+                              #:sort-op                sort-op
+                              #:sort-key               sort-key
+                              #:sort-cache-keys?       cache-keys?
+                              #:filter                 filter-func
+                              #:pre                    pre
+                              #:post                   post)])
+
+                 ; tell jarvis that the tasks is done so that it can start a new one
+                 (async-channel-put control-ch (list 'stop (task.id (current-task)))))))))))
   result-ch)
 
 ;;----------------------------------------------------------------------
