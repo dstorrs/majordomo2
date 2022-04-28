@@ -338,13 +338,14 @@
        (let ([result (sync (add-task (start-majordomo) result-false #:retries 0))])
          (ok #t "if you don't specify a filter it's fine if data is not a list"))
 
-       (is-type (task.data (sync (add-task (start-majordomo)
-                                           result-false
-                                           #:filter  (and/c number? even?)
-                                           #:retries 0)))
-                exn:fail:contract?
-                "fails if you try to filter something that isn't a list")
-
+       (let ([ch (add-task (start-majordomo)
+                           result-false
+                           #:filter  (and/c number? even?)
+                           #:retries 0)])
+         (define result (sync ch))
+         (is-type (task.data result)
+                  exn:fail:contract?
+                  "fails if you try to filter something that isn't a list"))
        ]
       [catch (any/c (λ (e)
                       (display "failed to filter. Result:") (print e)
@@ -365,6 +366,14 @@
      (is-type result task? "channel contains a task, as expected")
      (is (task.status result) correct-status "the task had the expected status")
      (is (task.data   result) correct-data   "the task had the expected data"))))
+
+(test-suite
+ "current-task-data"
+ (parameterize ([current-task (task++ #:data 'outer)])
+   (is (current-task-data) 'outer "outer param 1: (current-task-data) returns 'outer as expected")
+   (parameterize ([current-task (task++ #:data 'inner)])
+     (is (current-task-data) 'inner "inner param: (current-task-data) returns 'inner as expected"))
+   (is (current-task-data) 'outer "outer param 2: (current-task-data) returns 'outer as expected")))
 
 (test-suite
  "get-task-result"
@@ -447,7 +456,7 @@
  (ok (> (max-running (start-majordomo)) 5) "by default, all tasks run more or less at once")
  ; >5 because maybe not 10 simultaneous tasks
 
- (is (max-running (start-majordomo #:max-tasks 1)) 1 "#:max-tasks 1 stayed limited to 1 task at a time")
- (is (max-running (start-majordomo #:max-tasks 3)) 3 "#:max-tasks 3 ran up to 3 tasks at a time")
+ (is (max-running (start-majordomo #:max-workers 1)) 1 "#:max-workers 1 stayed limited to 1 task at a time")
+ (is (max-running (start-majordomo #:max-workers 3)) 3 "#:max-workers 3 ran up to 3 tasks at a time")
 
  )

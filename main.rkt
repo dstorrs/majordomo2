@@ -13,14 +13,15 @@
          majordomo-id
          majordomo.max-workers
          majordomo-max-workers
-         
-         current-task
+
          task++  task
          task.id       task-id
          task.status   task-status
          task.data     task-data
          task?
          task-status/c
+         current-task
+         current-task-data
 
          is-success?
          is-not-success?
@@ -135,12 +136,15 @@
         [(list 'stop id)
          ; a worker has stopped.  there is now room for another, so we can pull from the
          ; queue if there are any waiting tasks
+         (log-majordomo2-debug "~a task id ~a has stopped" (thread-id) id)
+         
          (match-define (struct* majordomo ([queued-tasks      queued-tasks]
                                            [num-tasks-running num-tasks-running]
                                            [max-workers       max-workers]))
            jarvis)
          (set-majordomo-num-tasks-running! jarvis (sub1 num-tasks-running))
          (when (not (queue-empty? queued-tasks))
+           (log-majordomo2-debug "~a starting next task..." (thread-id))
            (define-values (next-task-promise new-queue) (queue-remove (majordomo.queued-tasks jarvis)))
            (set-majordomo-queued-tasks! jarvis new-queue)
            (set-majordomo-num-tasks-running! jarvis num-tasks-running)
@@ -155,8 +159,8 @@
 (define/contract (stop-majordomo jarvis)
   (-> majordomo? any)
   (log-majordomo2-debug "~a: stopping majordomo..." (thread-id))
-  (let ([jarvis (set-majordomo-queued-tasks jarvis (make-queue))]) ; let go of the jobs queue to help the GC
-    (custodian-shutdown-all (majordomo.cust jarvis))))
+  (set-majordomo-queued-tasks! jarvis (make-queue)) ; let go of the jobs queue to help the GC
+  (custodian-shutdown-all (majordomo.cust jarvis)))
 
 ;;----------------------------------------------------------------------
 
@@ -381,9 +385,10 @@
    control-ch
    (list 'add
          (delay
-           (parameterize ([current-custodian (majordomo.cust jarvis)])
+           (parameterize ([current-custodian (majordomo.cust jarvis)]
+                          [current-task      (task++)])
              (match-define (and the-task (struct* task ([manager-ch manager-ch])))
-               (task++))
+               (current-task))
 
              ; worker
              (define (start-worker the-task)
@@ -392,34 +397,31 @@
                  (thread-with-id
                   (thunk
                    (log-majordomo2-debug "~a Starting worker thread for:\n\t action: ~v\n\targs: ~v" (thread-id) action args)
-                   (with-handlers ([exn:break? raise]
-                                   [any/c failure])
 
-                     ; The arguments are passed into a rest arg, meaning that they come to us as a
-                     ; list and we therefore need to use 'apply' to unwrap them so that the action
-                     ; can get them as individual items.
-                     ;
-                     ; In some cases the function expects individual arguments but it's more
-                     ; convenient for the customer to pass it as a list, e.g. because the args were
-                     ; generated via a 'map'.  In this case we need to unwrap it twice and we
-                     ; expect that 'args' is a one-element list where the element is a list
-                     ; containing the actual args.
-                     ;
-                     ; Example:
-                     ;
-                     ;   (define (foo a b c) (+ a b c))
-                     ;   (add-task jarvis foo 1 2 3)     ; the 'args' binding contains '(1 2 3)
-                     ;   (add-task jarvis foo '(1 2 3))  ; the 'args' binding contains '((1 2 3))
-                     ;
-                     (log-majordomo2-debug "~a about to apply action ~v with args ~v" (thread-id) action args)
-                     (with-handlers ([exn:break? raise]
-                                     [any/c (λ (e)
-                                              (log-majordomo2-debug "~a caught: ~v" (thread-id) e)
-                                              (failure e))])
-                       (define result (apply action (if unwrap? (car args) args)))
-                       (log-majordomo2-debug "~a result was: ~v" (thread-id) result)
-                       (when (not (task.finalized? (current-task)))
-                         (success result))))))))
+                   ; The arguments are passed into a rest arg, meaning that they come to us as a
+                   ; list and we therefore need to use 'apply' to unwrap them so that the action
+                   ; can get them as individual items.
+                   ;
+                   ; In some cases the function expects individual arguments but it's more
+                   ; convenient for the customer to pass it as a list, e.g. because the args were
+                   ; generated via a 'map'.  In this case we need to unwrap it twice and we
+                   ; expect that 'args' is a one-element list where the element is a list
+                   ; containing the actual args.
+                   ;
+                   ; Example:
+                   ;
+                   ;   (define (foo a b c) (+ a b c))
+                   ;   (add-task jarvis foo 1 2 3)     ; the 'args' binding contains '(1 2 3)
+                   ;   (add-task jarvis foo '(1 2 3))  ; the 'args' binding contains '((1 2 3))
+                   ;
+                   (with-handlers ([exn:break? raise]
+                                   [any/c (λ (e)
+                                            (log-majordomo2-debug "~a caught: ~v" (thread-id) e)
+                                            (failure e))])
+                     (define result (apply action (if unwrap? (car args) args)))
+                     (log-majordomo2-debug "~a result was: ~v" (thread-id) result)
+                     (when (not (task.finalized? (current-task)))
+                       (success result)))))))
 
              (define worker (start-worker the-task))
 
@@ -430,6 +432,8 @@
                (let loop ([retries  retries]
                           [the-task the-task]
                           [worker   worker])
+                 ; set current-task, do not parameterize it.  We want it to stick around after loop exits.
+                 (current-task the-task)
                  (match (sync/timeout keepalive manager-ch worker)
                    ['keepalive
                     (loop retries the-task worker)]
@@ -463,10 +467,10 @@
                               #:sort-cache-keys?       cache-keys?
                               #:filter                 filter-func
                               #:pre                    pre
-                              #:post                   post)])
+                              #:post                   post)]))
 
-                 ; tell jarvis that the tasks is done so that it can start a new one
-                 (async-channel-put control-ch (list 'stop (task.id (current-task)))))))))))
+               ; notify majordomo that a worker has finished and it's okay to start another one
+               (async-channel-put control-ch (list 'stop (task.id (current-task))))))))))
   result-ch)
 
 ;;----------------------------------------------------------------------
@@ -487,6 +491,11 @@
      (thread-with-id (thunk (channel-put ch val)))
      ch]
     [_  (add-task (start-majordomo) identity val)]))
+
+;;----------------------------------------------------------------------
+
+(define (current-task-data)
+  (task.data (current-task)))
 
 ;;----------------------------------------------------------------------
 

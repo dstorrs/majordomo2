@@ -387,7 +387,7 @@ Sometimes, usually when running in parallel, you'll have a task where the data f
           (stop-majordomo jarvis))
           ]
 
-Note that flattening loses the id and status fields of the subtasks.
+Note that flattening loses the id and status fields of the subtasks.  The status of the returned task will be @racket['mixed] iff the subtasks had differing status codes and at least one of them had status of either @racket['success] or @racket['mixed].
 
 
 @subsection[#:tag "convenience-functions"]{Convenience Functions}
@@ -409,15 +409,15 @@ Some operations are common enough that it's worth having a short form to avoid b
 
 @section[#:tag "API"]{API}
 
-@defproc*[([(start-majordomo) majordomo?]
-           [(stop-majordomo) void?])]{Start and stop a @racket[majordomo] instance and all tasks it manages.  An instance contains a @racket[custodian] which manages resources created by any tasks given to that instance.  These resources will be cleaned up when @racket[stop-majordomo] is called.}
+@defproc*[([(start-majordomo [#:max-workers max-workers (or/c +inf.0 exact-positive-integer?) +inf.0]) majordomo?]
+           [(stop-majordomo) void?])]{Start and stop a @racket[majordomo] instance and all tasks it manages.  The optional @racketid[#:max-workers] arguments will specify a maximum number of tasks that can be running at a time, defaulting to 'as many as you like'.  (NOTE:  If it matters, each task spawns two threads, although the manager thread is very lightweight.)  An instance contains a @racket[custodian] which manages resources created by any tasks given to that instance.  These resources will be cleaned up when @racket[stop-majordomo] is called.}
 
 @defproc*[([(majordomo.id [instance majordomo])  any/c]
            [(majordomo-id [instance majordomo])  any/c])]{Retrieve the unique ID for this particular instance.  It's possible to have as many majordomo instances as desired.  You might have multiple ones in order to group tasks together so that it's easy to shut down a specific group without disturbing others.}
 
 @defproc[(majordomo? [val any/c]) boolean?]{Predicate for the @racket[majordomo] struct.}
 
-@defproc[(task-status/c [val (or/c 'success 'failure 'unspecified 'timeout)]) boolean?]{Contract for legal task status values.}
+@defproc[(task-status/c [val (or/c 'success 'failure 'unspecified 'timeout 'mixed)]) boolean?]{Contract for legal task status values.  @racket['mixed] is used in cases where @racket[#:parallel?] was combined with @racket[#:flatten-nested-tasks?] and some of the subtasks succeeded while others failed.}
 
 @defproc[
          #:kind "task constructor"
