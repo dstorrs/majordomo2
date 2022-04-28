@@ -436,9 +436,11 @@ Some operations are common enough that it's worth having a short form to avoid b
            [(task-status [the-task task?]) symbol?])
           ]{Accessors for the @racketid[status] field of a @racket[task] struct.}
 
-@defproc*[([(task.data [the-task task?]) symbol?]
-           [(task-data [the-task task?]) symbol?])
+@defproc*[([(task.data [the-task task?]) any/c]
+           [(task-data [the-task task?]) any/c])
           ]{Accessors for the @racketid[data] field of a @racket[task] struct. See @secref["task-data"] for how the data field is used.}
+
+@defproc[(current-task-data) any/c]{Convenience function.  Equivalent to @racket[(task.data (current-task))]. See @secref["task-data"] for how the data field is used.}
 
 
 @defproc*[([(is-success? [the-task task?]) boolean?]
