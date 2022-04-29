@@ -4,7 +4,8 @@
          (multi-in racket (async-channel  contract/base  contract/region  function  list  match promise))
          queue
          struct-plus-plus
-         thread-with-id)
+         thread-with-id
+         try-catch)
 
 (provide start-majordomo
          stop-majordomo
@@ -124,20 +125,24 @@
                                            [num-tasks-running num-tasks-running]
                                            [max-workers       max-workers]))
            jarvis)
+         (log-majordomo2-debug "~a ~a in queue-manager thread, adding task promise.  number of currently-running tasks: ~a. max-workers: ~a" (thread-id) (current-inexact-milliseconds) num-tasks-running max-workers)
+
          (define new-tasks  (queue-add queued-tasks task-promise))
          (cond [(< num-tasks-running max-workers)
+                (log-majordomo2-debug "~a ~a running the task" (thread-id) (current-inexact-milliseconds))
                 (define-values (next-task-promise new-queue) (queue-remove new-tasks))
                 (set-majordomo-queued-tasks! jarvis new-queue)
                 (set-majordomo-num-tasks-running! jarvis (add1 num-tasks-running))
                 (force next-task-promise)]
                [else
+                (log-majordomo2-debug "~a ~a NOT running the task" (thread-id) (current-inexact-milliseconds))
                 (set-majordomo-queued-tasks! jarvis new-tasks)])]
         ;
         [(list 'stop id)
          ; a worker has stopped.  there is now room for another, so we can pull from the
          ; queue if there are any waiting tasks
          (log-majordomo2-debug "~a task id ~a has stopped" (thread-id) id)
-         
+
          (match-define (struct* majordomo ([queued-tasks      queued-tasks]
                                            [num-tasks-running num-tasks-running]
                                            [max-workers       max-workers]))
@@ -165,7 +170,7 @@
 ;;----------------------------------------------------------------------
 
 (define (update-data data)
-  (log-majordomo2-debug "~a: update-data with ~v" (thread-id) data)
+  (log-majordomo2-debug "~a ~a: update-data with ~v" (thread-id) (current-inexact-milliseconds) data)
   (define the-task (current-task))
   (current-task (set-task-data the-task data))
   (channel-put (task.manager-ch the-task) (list 'update-data data)))
@@ -175,7 +180,7 @@
   (channel-put (task.manager-ch (current-task)) 'keepalive))
 
 (define (success [data the-unsupplied-arg])
-  (log-majordomo2-debug "~a: success! data is: ~v" (thread-id) data)
+  (log-majordomo2-debug "~a ~a: success! data is: ~v" (thread-id) (current-inexact-milliseconds) data)
   (finish-with 'success
                (let* ([the-task (set-task-finalized? (current-task) #t)]
                       [the-task (if (unsupplied-arg? data)
@@ -184,7 +189,7 @@
                  the-task)))
 
 (define (failure [data the-unsupplied-arg])
-  (log-majordomo2-debug "~a: failure! data is: ~v" (thread-id) data)
+  (log-majordomo2-debug "~a ~a: failure! data is: ~v" (thread-id) (current-inexact-milliseconds) data)
   (finish-with 'failure
                (let* ([the-task (set-task-finalized? (current-task) #t)]
                       [the-task (if (unsupplied-arg? data)
@@ -194,7 +199,8 @@
 
 (define/contract (finish-with status the-task)
   (-> symbol? task? any)
-  (log-majordomo2-debug "~a: finish-with status: ~v and data: ~v" (thread-id) status (task.data the-task))
+  (log-majordomo2-debug "~a ~a: finish-with status: ~v and data: ~v"
+                        (thread-id) (current-inexact-milliseconds) status (task.data the-task))
   (channel-put (task.manager-ch the-task)
                (list status (set-task-status the-task status))))
 
@@ -222,7 +228,8 @@
       #:flatten-nested-tasks? boolean?
       any)
 
-  (log-majordomo2-debug "~a: entering finalize for task id: ~a" (thread-id) (task.id the-task))
+  (log-majordomo2-debug "~a ~a: entering finalize for task id: ~a"
+                        (thread-id) (current-inexact-milliseconds) (task.id the-task))
   (define raw-data
     (task.data (if flatten-nested-tasks?
                    (flatten-nested-tasks the-task)
@@ -429,45 +436,54 @@
              (thread-with-id
               (thunk
                (log-majordomo2-debug "~a Starting manager thread for action ~v" (thread-id) action)
-               (let loop ([retries  retries]
-                          [the-task the-task]
-                          [worker   worker])
-                 ; set current-task, do not parameterize it.  We want it to stick around after loop exits.
-                 (current-task the-task)
-                 (match (sync/timeout keepalive manager-ch worker)
-                   ['keepalive
-                    (loop retries the-task worker)]
-                   ;
-                   [(list 'update-data data)
-                    (loop retries (set-task-data the-task data) worker)]
-                   ;
-                   [(or #f (== worker))
-                    #:when (> retries 0) ; timeout or thread died, can be retried
-                    (kill-thread worker)
-                    (loop (sub1 retries)
-                          the-task
-                          (start-worker the-task))]
-                   ;
-                   [(or #f (== worker)) ; timeout or thread died, no retries left
-                    (kill-thread worker)
-                    (finalize (set-task-status the-task 'timeout) result-ch
-                              #:flatten-nested-tasks? flatten-nested-tasks?
-                              #:sort-op               sort-op
-                              #:sort-key              sort-key
-                              #:sort-cache-keys?      cache-keys?
-                              #:filter                filter-func
-                              #:pre                   pre
-                              #:post                  post)]
-                   [(list status (? task? the-task))
-                    (log-majordomo2-debug "~a task finished with status ~a" (thread-id) status)
-                    (finalize (set-task-status the-task status) result-ch
-                              #:flatten-nested-tasks?  flatten-nested-tasks?
-                              #:sort-op                sort-op
-                              #:sort-key               sort-key
-                              #:sort-cache-keys?       cache-keys?
-                              #:filter                 filter-func
-                              #:pre                    pre
-                              #:post                   post)]))
+               (define result
+                 (defatalize
+                   (let loop ([retries  retries]
+                              [the-task the-task]
+                              [worker   worker])
+                     (log-majordomo2-debug "~a manager thread looping for action ~v, task id: ~a"
+                                           (thread-id) action (task.id the-task))
+
+                     ; set current-task, do not parameterize it.  We want it to stick around after loop exits.
+                     (current-task the-task)
+                     (match (sync/timeout keepalive manager-ch worker)
+                       ['keepalive
+                        (loop retries the-task worker)]
+                       ;
+                       [(list 'update-data data)
+                        (loop retries (set-task-data the-task data) worker)]
+                       ;
+                       [(or #f (== worker))
+                        #:when (> retries 0) ; timeout or thread died, can be retried
+                        (log-majordomo2-debug "~a timeout or thread died for action ~v, can be retried" (thread-id) action)
+                        (kill-thread worker)
+                        (loop (sub1 retries)
+                              the-task
+                              (start-worker the-task))]
+                       ;
+                       [(or #f (== worker)) ; timeout or thread died, no retries left
+                        (log-majordomo2-debug "~a timeout or thread died for action ~v, can NOT be retried" (thread-id) action)
+                        (kill-thread worker)
+                        (finalize (set-task-status the-task 'timeout) result-ch
+                                  #:flatten-nested-tasks? flatten-nested-tasks?
+                                  #:sort-op               sort-op
+                                  #:sort-key              sort-key
+                                  #:sort-cache-keys?      cache-keys?
+                                  #:filter                filter-func
+                                  #:pre                   pre
+                                  #:post                  post)]
+                       [(list status (? task? the-task))
+                        (log-majordomo2-debug "~a task finished with status ~a" (thread-id) status)
+                        (finalize (set-task-status the-task status) result-ch
+                                  #:flatten-nested-tasks?  flatten-nested-tasks?
+                                  #:sort-op                sort-op
+                                  #:sort-key               sort-key
+                                  #:sort-cache-keys?       cache-keys?
+                                  #:filter                 filter-func
+                                  #:pre                    pre
+                                  #:post                   post)]))))
+
+               (log-majordomo2-debug "~a finished manager thread for action ~v, notifying majordomo that it stopped. result was: ~v" (thread-id) action (task.id (current-task) result))
 
                ; notify majordomo that a worker has finished and it's okay to start another one
                (async-channel-put control-ch (list 'stop (task.id (current-task))))))))))
