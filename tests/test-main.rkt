@@ -6,7 +6,7 @@
          (multi-in racket (async-channel contract/base function list match set))
          "../main.rkt")
 
-(expect-n-tests 78)
+(expect-n-tests 82)
 
 (define-logger majordomo2-tests)
 
