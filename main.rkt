@@ -292,7 +292,7 @@
         #:sort-key              (-> any/c any/c)
         #:sort-cache-keys?      boolean?
         #:post                  procedure?
-        #:parameterization      parameterization?
+        #:parameterization      (or/c #f parameterization?)
         )
        #:rest list?
        channel?)
@@ -301,138 +301,152 @@
 
 
 
-   ;; majordomo has a max-worker field that defines the maximum number of tasks it can be
-   ;; running at a time.  By default this is +inf.0, meaning no limit.  Otherwise, it will
-   ;; put tasks in a queue and run them when a worker is available.
-   ;;
-   ;;  IMPORTANT: THERE'S A TRICKY PROBLEM HERE WHEN USING THE WORKER QUEUE.  It's not a
-   ;;  bug, it's caused by how Racket manages parameters (meaning make-parameter, not
-   ;;  function arguments).  The details are complicated and you can read more about them here:
-   ;;
-   ;;      https://racket.discourse.group/t/running-a-procedure-from-delay-does-not-capture-modified-parameters/936/21?u=dstorrs
-   ;;
-   ;; When this majordomo instance has:
-   ;;
-   ;;    UNlimited workers (+inf.0): it will go ahead and run the task immediately, without
-   ;;    using the queue, and you can ignore the rest of this comment block.
-   ;;
-   ;;    limited workers: this function is going to do some futzing and then put a task
-   ;;    into the worker queue to be run as soon as there's a worker available.
-   ;;
-   ;; Again, if you have unlimited workers, you can ignore the rest of this.
-   ;;
-   ;; You can also ignore the rest of this if your code does not do direct assignment to
-   ;; parameters, such as (username "alice"), and instead either leaves them alone or does
-   ;; (parameterize ([username "alice"]) ...)
-   ;;
-   ;;
-   ;;
-   ;;  The upshot is that changes to parameters are not visible in other threads (that's
-   ;;  the point of parameters).  Since the worker queue is managed in a separate thread,
-   ;;  your code may end up seeing a different value for a parameter when its called than
-   ;;  when it was created.
-   ;;
-   ;;  majordomo tries to avoid this by passing in the appropriate parameterization with
-   ;;  the task, but that will only capture changes made by way of (parameterize ([username
-   ;;  "alice"]) ...) and not changes made by direct assignment such as (username "alice")
-   ;;
-   ;;  Example:
-   ;;
-   ;;     (define users (make-parameter '(alice))) ; parameter exists and has value '(alice) in all threads
-   ;;
-   ;;     ; Create the instance and start the queue-management thread.  That thread gets a
-   ;;     ; copy of the current parameterization.
-   ;;     (define jarvis-unlimited (start-majordomo))  ; queue thread exists but will never be used
-   ;;     (define jarvis-limited   (start-majordomo #:max-workers 5))  ; queue thread sees (users '(alice))
-   ;;
-   ;;     (users '(alice bob)) ; original thread sees the addition of bob, jarvis-limited's queue does not
-   ;;     (define (show-users)
-   ;;        (for ([user (users))
-   ;;          (display user)))
-   ;;
-   ;;     (show-users) ; => alicebob, reflecting the value of `users` in the main thread
-   ;;     (add-task jarvis-unlimited show-users) ; => alicebob, reflecting value in the main thread
-   ;;     (add-task jarvis-limited show-users) ; => alice, reflecting the value in the queue thread
-   ;;
-   ;;  The queue thread in jarvis-limited was created when jarvis-limited was created.  Problem: When
-   ;;  threads are created they get a copy of the then-current parameterization (the values
-   ;;  of all parameters defined in the program).  The parameterization is thread-local
-   ;;  meaning that changes made after the thread is created are not visible to the thread.
-   ;;  Therefore, if we create the queue management thread and later modify parameters that
-   ;;  the task will depend on, that task will see the original value of the parameter
-   ;;  which is almost certainly not what you want.
-   ;;
-   ;;  To get around this, we pass in the parameterization.  This will fix the issue IF AND
-   ;;  ONLY IF the creator of the code always used `parameterize` to update their
-   ;;  parameters instead of direct assignment.  Again, see the Discourse thread for full
-   ;;  details because this stuff be complicated yo.
-   ;;
-  (define result-ch (make-channel))
-  (cond [parallel?
-         (log-majordomo2-debug "~a: add-task in parallel" (thread-id))
+  ;; majordomo has a max-worker field that defines the maximum number of tasks it can be
+  ;; running at a time.  By default this is +inf.0, meaning no limit.  Otherwise, it will
+  ;; put tasks in a queue and run them when a worker is available.
+  ;;
+  ;;  IMPORTANT: THERE'S A TRICKY PROBLEM HERE WHEN USING THE WORKER QUEUE.  It's not a
+  ;;  bug, it's caused by how Racket manages parameters (meaning make-parameter, not
+  ;;  function arguments).  The details are complicated and you can read more about them here:
+  ;;
+  ;;      https://racket.discourse.group/t/running-a-procedure-from-delay-does-not-capture-modified-parameters/936/21?u=dstorrs
+  ;;
+  ;; When this majordomo instance has:
+  ;;
+  ;;    UNlimited workers (+inf.0): it will go ahead and run the task immediately, without
+  ;;    using the queue, and you can ignore the rest of this comment block.
+  ;;
+  ;;    limited workers: this function is going to do some futzing and then put a task
+  ;;    into the worker queue to be run as soon as there's a worker available.
+  ;;
+  ;; Again, if you have unlimited workers, you can ignore the rest of this.
+  ;;
+  ;; You can also ignore the rest of this if your code does not do direct assignment to
+  ;; parameters, such as (username "alice"), and instead either leaves them alone or does
+  ;; (parameterize ([username "alice"]) ...)
+  ;;
+  ;;
+  ;;
+  ;;  The upshot is that changes to parameters are not visible in other threads (that's
+  ;;  the point of parameters).  Since the worker queue is managed in a separate thread,
+  ;;  your code may end up seeing a different value for a parameter when its called than
+  ;;  when it was created.
+  ;;
+  ;;  majordomo tries to avoid this by passing in the appropriate parameterization with
+  ;;  the task, but that will only capture changes made by way of (parameterize ([username
+  ;;  "alice"]) ...) and not changes made by direct assignment such as (username "alice")
+  ;;
+  ;;  Example:
+  ;;
+  ;;   (define users (make-parameter '(alice))) ; parameter exists and has value '(alice) in all threads
+  ;;   ; Create the instance and start the queue-management thread.  That thread gets a
+  ;;   ; copy of the current parameterization.
+  ;;   (define jarvis-unlimited (start-majordomo))  ; queue thread exists but will never be used
+  ;;   (define jarvis-limited   (start-majordomo #:max-workers 5))  ; queue thread sees (users '(alice))
+  ;;  
+  ;;   (users '(alice bob)) ; original thread sees the addition of bob, jarvis-limited's queue does not
+  ;;  
+  ;;   (define (show-users n)
+  ;;     (display n) (display ": ")
+  ;;     (for ([user (users)])
+  ;;       (display user))
+  ;;     (displayln ""))
+  ;;  
+  ;;   (define run (compose1 void sync)) ; run the task, wait for completion, discard result
+  ;;   (show-users 0) ; => alicebob, reflecting the value of `users` in the main thread
+  ;;   (run (add-task jarvis-unlimited show-users 1)) ; => 1: alicebob, the value in the main thread
+  ;;   (run (add-task jarvis-limited show-users 2))   ; => 2: alice, the value in the queue thread
+  ;;  
+  ;;     ; You may pass in any parametereterization you like.  Let's make one.
+  ;;   (define ch (make-async-channel))
+  ;;   (void (thread (thunk (parameterize ([users '(alice bob charlie dan)])
+  ;;                          (async-channel-put ch (current-parameterization))))))
+  ;;   (define params  (async-channel-get ch)) ; different from main thread and queue thread
+  ;;
+  ;;   (run (add-task #:parameterization params
+  ;;                  jarvis-unlimited show-users 3)) ; => 3: alicebobcharliedan, the value in the sub thread
+  ;;
+  ;;  The queue thread in jarvis-limited was created when jarvis-limited was created.  Problem: When
+  ;;  threads are created they get a copy of the then-current parameterization (the values
+  ;;  of all parameters defined in the program).  The parameterization is thread-local
+  ;;  meaning that changes made after the thread is created are not visible to the thread.
+  ;;  Therefore, if we create the queue management thread and later modify parameters that
+  ;;  the task will depend on, that task will see the original value of the parameter
+  ;;  which is almost certainly not what you want.
+  ;;
+  ;;  To get around this, we pass in the parameterization.  This will fix the issue IF AND
+  ;;  ONLY IF the creator of the code always used `parameterize` to update their
+  ;;  parameters instead of direct assignment.  Again, see the Discourse thread for full
+  ;;  details because this stuff be complicated yo.
+  ;;
+  (in/out-logged
+   ("add-task" #:to majordomo2-logger "thread id" (thread-id) "action" action "args, before unwrap" args)
+   (define result-ch (make-channel))
+   (cond [parallel?
+          (log-majordomo2-debug "~a: add-task in parallel" (thread-id))
 
-         ; Spawn each argument off into its own task which will run in its own thread.
+          ; Spawn each argument off into its own task which will run in its own thread.
 
-         ;  NOTE: In some cases it will be easier for the customer to pass args as a list
-         ;  instead of as separate arguments, for example when the args are generated via
-         ;  a 'map'.  In that case they can use #:unwrap? #t to have us unwrap it for them.
-         (define subtasks
-           (map sync
-                (for/list ([arg (in-list (if unwrap? (car args) args))])
-                  (add-task-helper jarvis
-                                   action
-                                   (list arg)
-                                   (make-channel)
-                                   #:parameterization      params
-                                   #:flatten-nested-tasks? flatten-nested-tasks?
-                                   #:keepalive             keepalive
-                                   #:retries               retries
-                                   #:parallel?             #f))))
+          ;  NOTE: In some cases it will be easier for the customer to pass args as a list
+          ;  instead of as separate arguments, for example when the args are generated via
+          ;  a 'map'.  In that case they can use #:unwrap? #t to have us unwrap it for them.
+          (define subtasks
+            (map sync
+                 (for/list ([arg (in-list (if unwrap? (car args) args))])
+                   (add-task-helper jarvis
+                                    action
+                                    (list arg)
+                                    (make-channel)
+                                    #:parameterization      params
+                                    #:flatten-nested-tasks? flatten-nested-tasks?
+                                    #:keepalive             keepalive
+                                    #:retries               retries
+                                    #:parallel?             #f))))
 
-         ; Collect the statuses (stati? whatever) from the subtasks
-         (define statuses (map task.status subtasks))
-         (log-majordomo2-debug "raw statuses before dedup: ~v" statuses)
+          ; Collect the statuses (stati? whatever) from the subtasks
+          (define statuses (map task.status subtasks))
+          (log-majordomo2-debug "raw statuses before dedup: ~v" statuses)
 
-         (define final-status
-           (match (remove-duplicates statuses)
-             ['()                                (raise "no statuses?")]
-             [(list 'success)                    'success]
-             [(list 'failure)                    'failure]
-             [(list-no-order 'success other ...) 'mixed]
-             [(list-no-order 'mixed   other ...) 'mixed]
-             [_                                  'failure]))
+          (define final-status
+            (match (remove-duplicates statuses)
+              ['()                                (raise "no statuses?")]
+              [(list 'success)                    'success]
+              [(list 'failure)                    'failure]
+              [(list-no-order 'success other ...) 'mixed]
+              [(list-no-order 'mixed   other ...) 'mixed]
+              [_                                  'failure]))
 
-         ; Finalize them in another thread, since finalize uses channel-put, which is
-         ; blocking.
-         (thread-with-id (thunk (finalize (task++ #:data subtasks #:status final-status)
-                                          result-ch
-                                          #:flatten-nested-tasks? flatten-nested-tasks?
-                                          #:sort-op               sort-op
-                                          #:sort-key              sort-key
-                                          #:sort-cache-keys?      cache-keys?
-                                          #:filter                filter-func
-                                          #:pre                   pre
-                                          #:post                  post)))
-         ; return the result channel
-         result-ch]
-        [else
-         (log-majordomo2-debug "~a: add-task NOT in parallel" (thread-id))
-         (add-task-helper jarvis
-                          action
-                          args
-                          result-ch
-                          #:parameterization      params
-                          #:flatten-nested-tasks? flatten-nested-tasks?
-                          #:keepalive             keepalive
-                          #:retries               retries
-                          #:parallel?             parallel?
-                          #:unwrap?               unwrap?
-                          #:sort-op               sort-op
-                          #:sort-key              sort-key
-                          #:sort-cache-keys?      cache-keys?
-                          #:filter                filter-func
-                          #:pre                   pre
-                          #:post                  post)]))
+          ; Finalize them in another thread, since finalize uses channel-put, which is
+          ; blocking.
+          (thread-with-id (thunk (finalize (task++ #:data subtasks #:status final-status)
+                                           result-ch
+                                           #:flatten-nested-tasks? flatten-nested-tasks?
+                                           #:sort-op               sort-op
+                                           #:sort-key              sort-key
+                                           #:sort-cache-keys?      cache-keys?
+                                           #:filter                filter-func
+                                           #:pre                   pre
+                                           #:post                  post)))
+          ; return the result channel
+          result-ch]
+         [else
+          (log-majordomo2-debug "~a: add-task NOT in parallel" (thread-id))
+          (add-task-helper jarvis
+                           action
+                           args
+                           result-ch
+                           #:parameterization      params
+                           #:flatten-nested-tasks? flatten-nested-tasks?
+                           #:keepalive             keepalive
+                           #:retries               retries
+                           #:parallel?             parallel?
+                           #:unwrap?               unwrap?
+                           #:sort-op               sort-op
+                           #:sort-key              sort-key
+                           #:sort-cache-keys?      cache-keys?
+                           #:filter                filter-func
+                           #:pre                   pre
+                           #:post                  post)])))
 
 ;;----------------------------------------------------------------------
 
@@ -514,57 +528,57 @@
          (in/out-logged
           ("manager thread" #:to majordomo2-logger #:results (result)
                             "thread-id" tid "action" action "args (before unwrap)" args)
-           (defatalize
-             (let loop ([retries  retries]
-                        [the-task the-task]
-                        [worker   worker])
-               (log-majordomo2-debug "~a manager thread looping for action ~v, task id: ~a"
-                                     (thread-id) action (task.id the-task))
+          (defatalize
+            (let loop ([retries  retries]
+                       [the-task the-task]
+                       [worker   worker])
+              (log-majordomo2-debug "~a manager thread looping for action ~v, task id: ~a"
+                                    (thread-id) action (task.id the-task))
 
-               ; set current-task, do not parameterize it.  We want it to stick around after loop exits.
-               (current-task the-task)
-               (match (sync/timeout keepalive manager-ch worker)
-                 ['keepalive
-                  (loop retries the-task worker)]
-                 ;
-                 [(list 'update-data data)
-                  (loop retries (set-task-data the-task data) worker)]
-                 ;
-                 [(or #f (== worker))
-                  #:when (> retries 0) ; timeout or thread died, can be retried
-                  (log-majordomo2-debug "~a timeout or thread died for action ~v, can be retried" (thread-id) action)
-                  (kill-thread worker)
-                  (loop (sub1 retries)
-                        the-task
-                        (start-worker the-task))]
-                 ;
-                 [(or #f (== worker)) ; timeout or thread died, no retries left
-                  (log-majordomo2-debug "~a timeout or thread died for action ~v, can NOT be retried" (thread-id) action)
-                  (kill-thread worker)
-                  (finalize (set-task-status the-task 'timeout) result-ch
-                            #:flatten-nested-tasks? flatten-nested-tasks?
-                            #:sort-op               sort-op
-                            #:sort-key              sort-key
-                            #:sort-cache-keys?      cache-keys?
-                            #:filter                filter-func
-                            #:pre                   pre
-                            #:post                  post)]
-                 [(list status (? task? the-task))
-                  (log-majordomo2-debug "~a task finished with status ~a" (thread-id) status)
-                  (finalize (set-task-status the-task status) result-ch
-                            #:flatten-nested-tasks?  flatten-nested-tasks?
-                            #:sort-op                sort-op
-                            #:sort-key               sort-key
-                            #:sort-cache-keys?       cache-keys?
-                            #:filter                 filter-func
-                            #:pre                    pre
-                            #:post                   post)]))))
+              ; set current-task, do not parameterize it.  We want it to stick around after loop exits.
+              (current-task the-task)
+              (match (sync/timeout keepalive manager-ch worker)
+                ['keepalive
+                 (loop retries the-task worker)]
+                ;
+                [(list 'update-data data)
+                 (loop retries (set-task-data the-task data) worker)]
+                ;
+                [(or #f (== worker))
+                 #:when (> retries 0) ; timeout or thread died, can be retried
+                 (log-majordomo2-debug "~a timeout or thread died for action ~v, can be retried" (thread-id) action)
+                 (kill-thread worker)
+                 (loop (sub1 retries)
+                       the-task
+                       (start-worker the-task))]
+                ;
+                [(or #f (== worker)) ; timeout or thread died, no retries left
+                 (log-majordomo2-debug "~a timeout or thread died for action ~v, can NOT be retried" (thread-id) action)
+                 (kill-thread worker)
+                 (finalize (set-task-status the-task 'timeout) result-ch
+                           #:flatten-nested-tasks? flatten-nested-tasks?
+                           #:sort-op               sort-op
+                           #:sort-key              sort-key
+                           #:sort-cache-keys?      cache-keys?
+                           #:filter                filter-func
+                           #:pre                   pre
+                           #:post                  post)]
+                [(list status (? task? the-task))
+                 (log-majordomo2-debug "~a task finished with status ~a" (thread-id) status)
+                 (finalize (set-task-status the-task status) result-ch
+                           #:flatten-nested-tasks?  flatten-nested-tasks?
+                           #:sort-op                sort-op
+                           #:sort-key               sort-key
+                           #:sort-cache-keys?       cache-keys?
+                           #:filter                 filter-func
+                           #:pre                    pre
+                           #:post                   post)]))))
 
          ; notify majordomo that a worker has finished and it's okay to start another one
          (async-channel-put control-ch (list 'stop (task.id (current-task)))))))))
   (cond [(equal? +inf.0 (majordomo.max-workers jarvis))
          (call-with-parameterization
-          params
+          (or params (current-parameterization)) ; they can pass #f to mean 'use current one'
           task-thunk)]
         [else
          (async-channel-put
