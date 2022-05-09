@@ -3,6 +3,7 @@
 (require racket/require
          (multi-in racket (async-channel  contract/base  contract/region  function  list  match))
          queue
+         in-out-logged
          struct-plus-plus
          thread-with-id
          try-catch)
@@ -118,18 +119,18 @@
     (define listener-ch (majordomo.worker-listener-ch jarvis))
     (let loop ()
       (match (sync listener-ch)
-        [(list 'add params task-promise)
+        [(list 'add params task-thunk) ; params #f means 'use the parameterization of the worker thread'
          (call-with-parameterization
-          params
+          (or params (current-parameterization)) ; use what was specified if anything
           (thunk
-           ; a new task is being submitted. add the promise to the queue, run a worker if we can
+           ; a new task is being submitted. add the thunk to the queue, run a worker if we can
            (match-define (struct* majordomo ([queued-tasks      queued-tasks]
                                              [num-tasks-running num-tasks-running]
                                              [max-workers       max-workers]))
              jarvis)
-           (log-majordomo2-debug "~a ~a in queue-manager thread, adding task promise.  number of currently-running tasks: ~a. max-workers: ~a" (thread-id) (current-inexact-milliseconds) num-tasks-running max-workers)
+           (log-majordomo2-debug "~a ~a in queue-manager thread, adding task thunk.  number of currently-running tasks: ~a. max-workers: ~a" (thread-id) (current-inexact-milliseconds) num-tasks-running max-workers)
 
-           (define new-tasks  (queue-add queued-tasks task-promise))
+           (define new-tasks  (queue-add queued-tasks task-thunk))
            (cond [(< num-tasks-running max-workers)
                   (log-majordomo2-debug "~a ~a running the task" (thread-id) (current-inexact-milliseconds))
                   (define-values (next-task-thunk new-queue) (queue-remove new-tasks))
@@ -298,97 +299,74 @@
   (log-majordomo2-debug "~a entering add-task for action ~v with args ~v"
                         (thread-id) action args)
 
-  ;; majordomo has a max-worker field that defines the maximum number of tasks it can be
-  ;; running at a time.  By default this is +inf.0, meaning no limit.
-  ;;
-  ;; This function is going to do some futzing and then put a task into the worker queue
-  ;; to be run as soon as there's a worker available, which will be immediately if
-  ;; max-workers is the default +inf.0.
-  ;;
-  ;;  IMPORTANT: THERE'S A TRICKY PROBLEM HERE.  It's not a bug, it's caused by how Racket
-  ;;  manages parameters (meaning make-parameter, not function arguments).  Specifically:
-  ;;
-  ;;  - If the instance has max-workers = +inf.0 (the default) then it sees the current
-  ;;    version of all parameters.
-  ;;
-  ;;  - If the instance has max-workers = <integer> then it sees the initial version of
-  ;;    all parameters plus any changes that were made via parameterize BUT NOT changes that
-  ;;    were made via direct assignment.
-  ;;
-  ;;  If you aren't using make-parameter then this isn't relevant to you.
-  ;;
-  ;; EXPLANATION:
-  ;;
-  ;;  - Parameters are values, just like numbers, strings, etc.  They can be thought of as
-  ;;    (approximately) structs that contain a thread-cell value that contains the value
-  ;;    stored in the parameter.
-  ;;
-  ;;  - A *parameterization* is (notionally) a hasheq that maps the parameter name to the 
-  ;;    parameter value.  For example:  (hasheq 'users (param (make-thread-cell '(alice bob) #t)))
-  ;;    They start off empty and each thread has its own parameterization.  When a new thread
-  ;;    is created it gets a copy of the current parameterization.
-  ;;
-  ;;  - Newly-created parameters are NOT included in any parameterization.
-  ;;
-  ;;  - Parameters can be updated in two ways:
-  ;;      (users '(alice bob))  ; mutational update
-  ;;      (parameterize ([users '(alice bob)]) ...) ; functional update
-  ;;
-  ;;  - When a parameter is updated mutationally (e.g. (users val)) it updates:
-  ;;       - The one in the current parameterization, if there is a parameterization
-  ;;           and the parameterization contains this parameter.
-  ;;       - Otherwise, the basic instance of the parameter.
-  ;;    Mutational update is like using `set!`
-  ;;
-  ;;  - When a parameter is updated functionally (i.e. via parameterize) it:
-  ;;       - Creates a parameterization if there isn't one
-  ;;       - Does the equivalent of this:
-  ;;           (hash-set (current-parameterization) 'users (param (make-thread-cell new-val #t)))
-  ;;          
-  ;;  - When a new thread is created it receives a *copy* of the current parameterization,
-  ;;    if any.  Since this is a copy, changes made in the original thread will not be reflected
-  ;;    in the new thread and vice versa.
-  ;;
-  ;;  With the technical details laid out, here's where the problem comes in:
-  ;;
-  ;;  When a majordomo is created using #:max-workers <integer> it creates a queue for managing
-  ;;  tasks.  Newly submitted tasks will be added to the queue and executed when there is
-  ;;  an available worker.  QUEUE MANAGEMENT HAPPENS IN A THREAD.  This thread is created
-  ;;  when the majordomo instance is created, which means that changes in the original
-  ;;  thread will not be seen, so if your code relies on the values of parameters that
-  ;;  were set after the majordomo is created then the task will not see them.  majordomo tries to work around this for you by having add-task pass the parameterization of the current thread and execute your task using that parameterization.  Since parameters that were updated mutationally are not included in the parameterization
-  ;;
-  ;;  When a majordomo is created with #:max-workers +inf.0 (the default), it executes the
-  ;;  tasks as soon as they are submitted without putting them in the queue.  This means
-  ;;  that it WILL see the current values of all parameters regardless of how they were
-  ;;  created.
-  ;;
-  ;;  Example:
-  ;;
-  ;;     (define users (make-parameter '(alice)))
-  ;;
-  ;;     ; Create the instance and start the queue-management thread.  That thread gets a
-  ;;     ; copy of the current parameterization.
-  ;;     (define jarvis-limited   (start-majordomo #:max-workers 5))  ; queue thread sees (users '(alice)
-  ;;     (define jarvis-unlimited (start-majordomo))  ; queue thread sees (users '(alice)
-  ;;
-  ;;     (users '(alice bob)) ; original thread sees the addition of bob, jarvis's queue does not
-  ;;     (define (show-users)
-  ;;        (for ([user (users))
-  ;;          (display user)))
-  ;;
-  ;;     (show-users) ; => alicebob
-  ;;     (add-task jarvis-limited show-users) ; => alice
-  ;;     (add-task jarvis-unlimited show-users) ; => alicebob
-  ;;
-  ;;  That thread was created when that the majordomo instance was created.  Problem: When
-  ;;  threads are created they get a copy of the then-current parameterization (the values
-  ;;  of all parameters defined in the program).  The parameterization is thread-local
-  ;;  meaning that changes made after the thread is created are not visible to the thread.
-  ;;  Therefore, if we create the queue management thread and later modify parameters that
-  ;;  the task will depend on, that task will see the original value of the parameter
-  ;;  which is almost certainly not what you want.
-  ;;
+
+
+   ;; majordomo has a max-worker field that defines the maximum number of tasks it can be
+   ;; running at a time.  By default this is +inf.0, meaning no limit.  Otherwise, it will
+   ;; put tasks in a queue and run them when a worker is available.
+   ;;
+   ;;  IMPORTANT: THERE'S A TRICKY PROBLEM HERE WHEN USING THE WORKER QUEUE.  It's not a
+   ;;  bug, it's caused by how Racket manages parameters (meaning make-parameter, not
+   ;;  function arguments).  The details are complicated and you can read more about them here:
+   ;;
+   ;;      https://racket.discourse.group/t/running-a-procedure-from-delay-does-not-capture-modified-parameters/936/21?u=dstorrs
+   ;;
+   ;; When this majordomo instance has:
+   ;;
+   ;;    UNlimited workers (+inf.0): it will go ahead and run the task immediately, without
+   ;;    using the queue, and you can ignore the rest of this comment block.
+   ;;
+   ;;    limited workers: this function is going to do some futzing and then put a task
+   ;;    into the worker queue to be run as soon as there's a worker available.
+   ;;
+   ;; Again, if you have unlimited workers, you can ignore the rest of this.
+   ;;
+   ;; You can also ignore the rest of this if your code does not do direct assignment to
+   ;; parameters, such as (username "alice"), and instead either leaves them alone or does
+   ;; (parameterize ([username "alice"]) ...)
+   ;;
+   ;;
+   ;;
+   ;;  The upshot is that changes to parameters are not visible in other threads (that's
+   ;;  the point of parameters).  Since the worker queue is managed in a separate thread,
+   ;;  your code may end up seeing a different value for a parameter when its called than
+   ;;  when it was created.
+   ;;
+   ;;  majordomo tries to avoid this by passing in the appropriate parameterization with
+   ;;  the task, but that will only capture changes made by way of (parameterize ([username
+   ;;  "alice"]) ...) and not changes made by direct assignment such as (username "alice")
+   ;;
+   ;;  Example:
+   ;;
+   ;;     (define users (make-parameter '(alice))) ; parameter exists and has value '(alice) in all threads
+   ;;
+   ;;     ; Create the instance and start the queue-management thread.  That thread gets a
+   ;;     ; copy of the current parameterization.
+   ;;     (define jarvis-unlimited (start-majordomo))  ; queue thread exists but will never be used
+   ;;     (define jarvis-limited   (start-majordomo #:max-workers 5))  ; queue thread sees (users '(alice))
+   ;;
+   ;;     (users '(alice bob)) ; original thread sees the addition of bob, jarvis-limited's queue does not
+   ;;     (define (show-users)
+   ;;        (for ([user (users))
+   ;;          (display user)))
+   ;;
+   ;;     (show-users) ; => alicebob, reflecting the value of `users` in the main thread
+   ;;     (add-task jarvis-unlimited show-users) ; => alicebob, reflecting value in the main thread
+   ;;     (add-task jarvis-limited show-users) ; => alice, reflecting the value in the queue thread
+   ;;
+   ;;  The queue thread in jarvis-limited was created when jarvis-limited was created.  Problem: When
+   ;;  threads are created they get a copy of the then-current parameterization (the values
+   ;;  of all parameters defined in the program).  The parameterization is thread-local
+   ;;  meaning that changes made after the thread is created are not visible to the thread.
+   ;;  Therefore, if we create the queue management thread and later modify parameters that
+   ;;  the task will depend on, that task will see the original value of the parameter
+   ;;  which is almost certainly not what you want.
+   ;;
+   ;;  To get around this, we pass in the parameterization.  This will fix the issue IF AND
+   ;;  ONLY IF the creator of the code always used `parameterize` to update their
+   ;;  parameters instead of direct assignment.  Again, see the Discourse thread for full
+   ;;  details because this stuff be complicated yo.
+   ;;
   (define result-ch (make-channel))
   (cond [parallel?
          (log-majordomo2-debug "~a: add-task in parallel" (thread-id))
