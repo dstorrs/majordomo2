@@ -510,8 +510,10 @@
        ; manager thread
        (thread-with-id
         (thunk
-         (log-majordomo2-debug "~a Starting manager thread for action ~v" (thread-id) action)
-         (define result
+         (define tid (thread-id))
+         (in/out-logged
+          ("manager thread" #:to majordomo2-logger #:results (result)
+                            "thread-id" tid "action" action "args (before unwrap)" args)
            (defatalize
              (let loop ([retries  retries]
                         [the-task the-task]
@@ -557,8 +559,6 @@
                             #:filter                 filter-func
                             #:pre                    pre
                             #:post                   post)]))))
-
-         (log-majordomo2-debug "~a finished manager thread for action ~v, notifying majordomo that it stopped. result was: ~v" (thread-id) action (task.id (current-task) result))
 
          ; notify majordomo that a worker has finished and it's okay to start another one
          (async-channel-put control-ch (list 'stop (task.id (current-task)))))))))
