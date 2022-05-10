@@ -1,12 +1,19 @@
 #lang racket/base
 
 (require racket/require
-         (multi-in racket (async-channel  contract/base  contract/region  function  list  match))
+         (multi-in racket (async-channel  contract/base  contract/region  function  list  match set))
          queue
          in-out-logged
          struct-plus-plus
          thread-with-id
          try-catch)
+
+; only used for debugging
+(require racket/pretty
+         racket/port
+         )
+
+
 
 (provide start-majordomo
          stop-majordomo
@@ -53,6 +60,7 @@
            [(max-workers +inf.0)                          (or/c +inf.0 exact-positive-integer?)]
            [(num-tasks-running 0)                         natural-number/c]
            [(queued-tasks (make-queue))                   queue?]
+           [(running-task-ids (set))                      set?]
            [(worker-listener-ch (make-async-channel))     async-channel?]
            )
           (#:omit-reflection)
@@ -82,7 +90,7 @@
 ;  - pop the queue
 ;  - execute the thunk
 
-(define task-status/c (or/c 'success 'failure 'unspecified 'timeout 'mixed))
+(define task-status/c (or/c 'success 'failure 'unspecified 'timeout 'mixed 'rejected))
 (struct++ task
           ([(id     (gensym "task-"))   symbol?]
            [(status 'unspecified)       task-status/c]
@@ -91,14 +99,15 @@
            [(finalized? #f)             boolean?]
            [(manager-ch (make-channel)) channel?]))
 
+
 (define/contract (is-success? t)     (-> task? boolean?) (equal? 'success (task.status t)))
 (define is-not-success? (negate is-success?))
 
 (define/contract (is-failure? t)     (-> task? boolean?) (equal? 'failure (task.status t)))
 (define/contract (is-timeout? t)     (-> task? boolean?) (equal? 'timeout (task.status t)))
+(define/contract (is-rejected? t)    (-> task? boolean?) (equal? 'rejected (task.status t)))
 (define/contract (is-unspecified-status? t) (-> task? boolean?)
   (equal? 'unspecified (task.status t)))
-
 
 (define/contract current-task
   (parameter/c (or/c #f task?))
@@ -116,30 +125,77 @@
   ; tell jarvis to start managing workers
   (thread-with-id
    (thunk
+    (define (run-task jarvis)
+      (match-define (struct* majordomo ([queued-tasks      queued-tasks]
+                                        [running-task-ids  running-task-ids]
+                                        [num-tasks-running num-tasks-running]
+                                        [max-workers       max-workers]))
+        jarvis)
+
+      (define-values (next-task-info new-queue) (queue-remove queued-tasks))
+      (log-majordomo2-debug "~a next-task-info: ~v. new queue after queue-remove is: ~v"
+                            (thread-id)
+                            next-task-info
+                            (with-output-to-string
+                              (thunk (pretty-print new-queue))))
+      (match-define (list  next-task-id params next-task-thunk)
+        next-task-info)
+
+
+      (define new-running-ids  (set-add running-task-ids next-task-id))
+      (log-majordomo2-debug "~a new running task ids: ~v" (thread-id) new-running-ids)
+
+      (set-majordomo-queued-tasks!      jarvis new-queue)
+      (set-majordomo-running-task-ids!  jarvis new-running-ids)
+      (set-majordomo-num-tasks-running! jarvis (add1 num-tasks-running))
+      (call-with-parameterization params
+                                  next-task-thunk))
+
     (define listener-ch (majordomo.worker-listener-ch jarvis))
     (let loop ()
       (match (sync listener-ch)
-        [(list 'add params task-thunk) ; params #f means 'use the parameterization of the worker thread'
-         (call-with-parameterization
-          (or params (current-parameterization)) ; use what was specified if anything
-          (thunk
-           ; a new task is being submitted. add the thunk to the queue, run a worker if we can
-           (match-define (struct* majordomo ([queued-tasks      queued-tasks]
-                                             [num-tasks-running num-tasks-running]
-                                             [max-workers       max-workers]))
-             jarvis)
-           (log-majordomo2-debug "~a ~a in queue-manager thread, adding task thunk.  number of currently-running tasks: ~a. max-workers: ~a" (thread-id) (current-inexact-milliseconds) num-tasks-running max-workers)
+        [(list 'add result-ch (and task-info (list the-task-id _ _)))
+         ; originally used a task-info struct for most of that.  Then Racket got pissy
+         ; about parsing it and I couldn't be arsed to figure it out --DKS
 
-           (define new-tasks  (queue-add queued-tasks task-thunk))
-           (cond [(< num-tasks-running max-workers)
-                  (log-majordomo2-debug "~a ~a running the task" (thread-id) (current-inexact-milliseconds))
-                  (define-values (next-task-thunk new-queue) (queue-remove new-tasks))
-                  (set-majordomo-queued-tasks! jarvis new-queue)
-                  (set-majordomo-num-tasks-running! jarvis (add1 num-tasks-running))
-                  (next-task-thunk)]
-                 [else
-                  (log-majordomo2-debug "~a ~a NOT running the task" (thread-id) (current-inexact-milliseconds))
-                  (set-majordomo-queued-tasks! jarvis new-tasks)])))]
+         (match-define (struct* majordomo ([queued-tasks      queued-tasks]
+                                           [running-task-ids  running-task-ids]
+                                           [num-tasks-running num-tasks-running]
+                                           [max-workers       max-workers]))
+           jarvis)
+
+         (cond [(set-member? running-task-ids the-task-id)
+                (log-majordomo2-error "~a task rejected because this id was already running: ~v"
+                                      (thread-id) the-task-id)
+                (parameterize ([current-task (task++ #:id the-task-id #:status 'rejected
+                                                     #:data "a task with this id is already running")])
+                  (thread-with-id
+                   (thunk
+                    (log-majordomo2-debug "~a calling finalize on task rejected because singleton ~v"
+                                          (thread-id) the-task-id)
+                    (finalize (current-task) result-ch
+                              #:filter                #f
+                              #:pre                   identity
+                              #:sort-op               #f
+                              #:sort-key              identity
+                              #:sort-cache-keys?      #f
+                              #:post                  identity
+                              #:flatten-nested-tasks? #f))))]
+               [else
+                (log-majordomo2-debug "~a task id ~a was not found in the set" (thread-id) the-task-id)
+
+                (define new-tasks  (queue-add queued-tasks task-info))
+                (set-majordomo-queued-tasks! jarvis new-tasks)
+
+                (log-majordomo2-debug "~a new queue after queue-add is: ~v"
+                                      (thread-id)
+                                      (with-output-to-string
+                                        (thunk (pretty-print new-tasks))))
+
+                (cond [(< num-tasks-running max-workers)
+                       (run-task jarvis)]
+                      [else
+                       (log-majordomo2-debug "~a ~a NOT running the task" (thread-id) (current-inexact-milliseconds))])])]
         ;
         [(list 'stop id)
          ; a worker has stopped.  there is now room for another, so we can pull from the
@@ -147,16 +203,17 @@
          (log-majordomo2-debug "~a task id ~a has stopped" (thread-id) id)
 
          (match-define (struct* majordomo ([queued-tasks      queued-tasks]
+                                           [running-task-ids  running-task-ids]
                                            [num-tasks-running num-tasks-running]
                                            [max-workers       max-workers]))
            jarvis)
+
+         (define new-task-ids (set-remove running-task-ids id))
+         (set-majordomo-running-task-ids jarvis new-task-ids)
          (set-majordomo-num-tasks-running! jarvis (sub1 num-tasks-running))
+
          (when (not (queue-empty? queued-tasks))
-           (log-majordomo2-debug "~a starting next task..." (thread-id))
-           (define-values (next-task-thunk new-queue) (queue-remove (majordomo.queued-tasks jarvis)))
-           (set-majordomo-queued-tasks! jarvis new-queue)
-           (set-majordomo-num-tasks-running! jarvis num-tasks-running)
-           (next-task-thunk))])
+           (run-task jarvis))])
       (loop))))
 
   ; return jarvis
@@ -279,6 +336,7 @@
                            #:sort-cache-keys?      [cache-keys?           #f]
                            #:post                  [post                  identity]
                            #:parameterization      [params                (current-parameterization)]
+                           #:with-singleton-id     [singleton-task-id           #f]
                            .                       args)
   (->* (majordomo? (unconstrained-domain-> any/c))
        (#:keepalive             (and/c real? (not/c negative?))
@@ -293,94 +351,100 @@
         #:sort-cache-keys?      boolean?
         #:post                  procedure?
         #:parameterization      (or/c #f parameterization?)
+        #:with-singleton-id     symbol?
         )
        #:rest list?
        channel?)
-  (log-majordomo2-debug "~a entering add-task for action ~v with args ~v"
-                        (thread-id) action args)
-
-
-
-  ;; majordomo has a max-worker field that defines the maximum number of tasks it can be
-  ;; running at a time.  By default this is +inf.0, meaning no limit.  Otherwise, it will
-  ;; put tasks in a queue and run them when a worker is available.
-  ;;
-  ;;  IMPORTANT: THERE'S A TRICKY PROBLEM HERE WHEN USING THE WORKER QUEUE.  It's not a
-  ;;  bug, it's caused by how Racket manages parameters (meaning make-parameter, not
-  ;;  function arguments).  The details are complicated and you can read more about them here:
-  ;;
-  ;;      https://racket.discourse.group/t/running-a-procedure-from-delay-does-not-capture-modified-parameters/936/21?u=dstorrs
-  ;;
-  ;; When this majordomo instance has:
-  ;;
-  ;;    UNlimited workers (+inf.0): it will go ahead and run the task immediately, without
-  ;;    using the queue, and you can ignore the rest of this comment block.
-  ;;
-  ;;    limited workers: this function is going to do some futzing and then put a task
-  ;;    into the worker queue to be run as soon as there's a worker available.
-  ;;
-  ;; Again, if you have unlimited workers, you can ignore the rest of this.
-  ;;
-  ;; You can also ignore the rest of this if your code does not do direct assignment to
-  ;; parameters, such as (username "alice"), and instead either leaves them alone or does
-  ;; (parameterize ([username "alice"]) ...)
-  ;;
-  ;;
-  ;;
-  ;;  The upshot is that changes to parameters are not visible in other threads (that's
-  ;;  the point of parameters).  Since the worker queue is managed in a separate thread,
-  ;;  your code may end up seeing a different value for a parameter when its called than
-  ;;  when it was created.
-  ;;
-  ;;  majordomo tries to avoid this by passing in the appropriate parameterization with
-  ;;  the task, but that will only capture changes made by way of (parameterize ([username
-  ;;  "alice"]) ...) and not changes made by direct assignment such as (username "alice")
-  ;;
-  ;;  Example:
-  ;;
-  ;;   (define users (make-parameter '(alice))) ; parameter exists and has value '(alice) in all threads
-  ;;   ; Create the instance and start the queue-management thread.  That thread gets a
-  ;;   ; copy of the current parameterization.
-  ;;   (define jarvis-unlimited (start-majordomo))  ; queue thread exists but will never be used
-  ;;   (define jarvis-limited   (start-majordomo #:max-workers 5))  ; queue thread sees (users '(alice))
-  ;;  
-  ;;   (users '(alice bob)) ; original thread sees the addition of bob, jarvis-limited's queue does not
-  ;;  
-  ;;   (define (show-users n)
-  ;;     (display n) (display ": ")
-  ;;     (for ([user (users)])
-  ;;       (display user))
-  ;;     (displayln ""))
-  ;;  
-  ;;   (define run (compose1 void sync)) ; run the task, wait for completion, discard result
-  ;;   (show-users 0) ; => alicebob, reflecting the value of `users` in the main thread
-  ;;   (run (add-task jarvis-unlimited show-users 1)) ; => 1: alicebob, the value in the main thread
-  ;;   (run (add-task jarvis-limited show-users 2))   ; => 2: alice, the value in the queue thread
-  ;;  
-  ;;     ; You may pass in any parametereterization you like.  Let's make one.
-  ;;   (define ch (make-async-channel))
-  ;;   (void (thread (thunk (parameterize ([users '(alice bob charlie dan)])
-  ;;                          (async-channel-put ch (current-parameterization))))))
-  ;;   (define params  (async-channel-get ch)) ; different from main thread and queue thread
-  ;;
-  ;;   (run (add-task #:parameterization params
-  ;;                  jarvis-unlimited show-users 3)) ; => 3: alicebobcharliedan, the value in the sub thread
-  ;;
-  ;;  The queue thread in jarvis-limited was created when jarvis-limited was created.  Problem: When
-  ;;  threads are created they get a copy of the then-current parameterization (the values
-  ;;  of all parameters defined in the program).  The parameterization is thread-local
-  ;;  meaning that changes made after the thread is created are not visible to the thread.
-  ;;  Therefore, if we create the queue management thread and later modify parameters that
-  ;;  the task will depend on, that task will see the original value of the parameter
-  ;;  which is almost certainly not what you want.
-  ;;
-  ;;  To get around this, we pass in the parameterization.  This will fix the issue IF AND
-  ;;  ONLY IF the creator of the code always used `parameterize` to update their
-  ;;  parameters instead of direct assignment.  Again, see the Discourse thread for full
-  ;;  details because this stuff be complicated yo.
-  ;;
   (in/out-logged
-   ("add-task" #:to majordomo2-logger "thread id" (thread-id) "action" action "args, before unwrap" args)
+   ("add-task" #:to majordomo2-logger
+               "(thread-id)" (thread-id) "action" action "args" args "singleton-task-id" singleton-task-id
+               "max-workers "(majordomo.max-workers jarvis))
+
+   ; don't use a task singleton id if you're not using the task queue
+   (when (and singleton-task-id (= +inf.0 (majordomo.max-workers jarvis)))
+     (raise-arguments-error 'add-task
+                            "majordomo instances without a limit on workers do not use the worker queue, so #:with-singleton-id is meaningless"))
+
+   (log-majordomo2-debug "did not die from task/workers check")
+
+   ;; majordomo has a max-worker field that defines the maximum number of tasks it can be
+   ;; running at a time.  By default this is +inf.0, meaning no limit.  Otherwise, it will
+   ;; put tasks in a queue and run them when a worker is available.
+   ;;
+   ;;  IMPORTANT: THERE'S A TRICKY PROBLEM HERE WHEN USING THE WORKER QUEUE.  It's not a
+   ;;  bug, it's caused by how Racket manages parameters (meaning make-parameter, not
+   ;;  function arguments).  The details are complicated and you can read more about them here:
+   ;;
+   ;;      https://racket.discourse.group/t/running-a-procedure-from-delay-does-not-capture-modified-parameters/936/21?u=dstorrs
+   ;;
+   ;; When this majordomo instance has:
+   ;;
+   ;;    UNlimited workers (+inf.0): it will go ahead and run the task immediately, without
+   ;;    using the queue, and you can ignore the rest of this comment block.
+   ;;
+   ;;    limited workers: this function is going to do some futzing and then put a task
+   ;;    into the worker queue to be run as soon as there's a worker available.
+   ;;
+   ;; Again, if you have unlimited workers, you can ignore the rest of this.
+   ;;
+   ;; You can also ignore the rest of this if your code does not do direct assignment to
+   ;; parameters, such as (username "alice"), and instead either leaves them alone or does
+   ;; (parameterize ([username "alice"]) ...)
+   ;;
+   ;;
+   ;;
+   ;;  The upshot is that changes to parameters are not visible in other threads (that's
+   ;;  the point of parameters).  Since the worker queue is managed in a separate thread,
+   ;;  your code may end up seeing a different value for a parameter when its called than
+   ;;  when it was created.
+   ;;
+   ;;  majordomo tries to avoid this by passing in the appropriate parameterization with
+   ;;  the task, but that will only capture changes made by way of (parameterize ([username
+   ;;  "alice"]) ...) and not changes made by direct assignment such as (username "alice")
+   ;;
+   ;;  Example:
+   ;;
+   ;;   (define users (make-parameter '(alice))) ; parameter exists and has value '(alice) in all threads
+   ;;   ; Create the instance and start the queue-management thread.  That thread gets a
+   ;;   ; copy of the current parameterization.
+   ;;   (define jarvis-unlimited (start-majordomo))  ; queue thread exists but will never be used
+   ;;   (define jarvis-limited   (start-majordomo #:max-workers 5))  ; queue thread sees (users '(alice))
+   ;;
+   ;;   (users '(alice bob)) ; original thread sees the addition of bob, jarvis-limited's queue does not
+   ;;
+   ;;   (define (show-users n)
+   ;;     (display n) (display ": ")
+   ;;     (for ([user (users)])
+   ;;       (display user))
+   ;;     (displayln ""))
+   ;;
+   ;;   (define run (compose1 void sync)) ; run the task, wait for completion, discard result
+   ;;   (show-users 0) ; => alicebob, reflecting the value of `users` in the main thread
+   ;;   (run (add-task jarvis-unlimited show-users 1)) ; => 1: alicebob, the value in the main thread
+   ;;   (run (add-task jarvis-limited show-users 2))   ; => 2: alice, the value in the queue thread
+   ;;
+   ;;     ; You may pass in any parametereterization you like.  Let's make one.
+   ;;   (define ch (make-async-channel))
+   ;;   (void (thread (thunk (parameterize ([users '(alice bob charlie dan)])
+   ;;                          (async-channel-put ch (current-parameterization))))))
+   ;;   (define params  (async-channel-get ch)) ; different from main thread and queue thread
+   ;;
+   ;;   (run (add-task #:parameterization params
+   ;;                  jarvis-unlimited show-users 3)) ; => 3: alicebobcharliedan, the value in the sub thread
+   ;;
+   ;;  The queue thread in jarvis-limited was created when jarvis-limited was created.  Problem: When
+   ;;  threads are created they get a copy of the then-current parameterization (the values
+   ;;  of all parameters defined in the program).  The parameterization is thread-local
+   ;;  meaning that changes made after the thread is created are not visible to the thread.
+   ;;  Therefore, if we create the queue management thread and later modify parameters that
+   ;;  the task will depend on, that task will see the original value of the parameter
+   ;;  which is almost certainly not what you want.
+   ;;
+   ;;  To get around this, we pass in the parameterization.  This will fix the issue IF AND
+   ;;  ONLY IF the creator of the code always used `parameterize` to update their
+   ;;  parameters instead of direct assignment.  Again, see the Discourse thread for full
+   ;;  details because this stuff be complicated yo.
+   ;;
    (define result-ch (make-channel))
    (cond [parallel?
           (log-majordomo2-debug "~a: add-task in parallel" (thread-id))
@@ -398,6 +462,7 @@
                                     (list arg)
                                     (make-channel)
                                     #:parameterization      params
+                                    #:with-singleton-id     singleton-task-id
                                     #:flatten-nested-tasks? flatten-nested-tasks?
                                     #:keepalive             keepalive
                                     #:retries               retries
@@ -436,6 +501,7 @@
                            args
                            result-ch
                            #:parameterization      params
+                           #:with-singleton-id     singleton-task-id
                            #:flatten-nested-tasks? flatten-nested-tasks?
                            #:keepalive             keepalive
                            #:retries               retries
@@ -452,21 +518,24 @@
 
 (define/contract (add-task-helper jarvis action args result-ch
                                   #:parameterization      params
+                                  #:with-singleton-id     [singleton-task-id     #f]
                                   #:flatten-nested-tasks? [flatten-nested-tasks? #f]
-                                  #:keepalive             [keepalive    5]
-                                  #:retries               [retries      3]
-                                  #:parallel?             [parallel?    #f]
-                                  #:unwrap?               [unwrap?      #f]
-                                  #:filter                [filter-func  #f]
-                                  #:pre                   [pre          identity]
-                                  #:sort-op               [sort-op      #f]
-                                  #:sort-key              [sort-key     identity]
-                                  #:sort-cache-keys?      [cache-keys?  #f]
-                                  #:post                  [post         identity]
+                                  #:keepalive             [keepalive             5]
+                                  #:retries               [retries               3]
+                                  #:parallel?             [parallel?             #f]
+                                  #:unwrap?               [unwrap?               #f]
+                                  #:filter                [filter-func           #f]
+                                  #:pre                   [pre                   identity]
+                                  #:sort-op               [sort-op               #f]
+                                  #:sort-key              [sort-key              identity]
+                                  #:sort-cache-keys?      [cache-keys?           #f]
+                                  #:post                  [post                  identity]
                                   )
   (->* (majordomo? (unconstrained-domain-> any/c) list? channel?
                    #:parameterization      parameterization?)
-       (#:keepalive             (and/c real? (not/c negative?))
+       (
+        #:with-singleton-id     (or/c #f symbol?)
+        #:keepalive             (and/c real? (not/c negative?))
         #:flatten-nested-tasks? boolean?
         #:retries               (or/c exact-nonnegative-integer? +inf.0)
         #:parallel?             boolean?
@@ -478,13 +547,20 @@
         #:pre                   procedure?
         #:post                  procedure?)
        channel?)
+
   (define control-ch (majordomo.worker-listener-ch jarvis))
+  (define new-task
+    (if singleton-task-id
+        (task++ #:id singleton-task-id)
+        (task++)))
+
   (define task-thunk
-    (thunk
-     (parameterize ([current-custodian (majordomo.cust jarvis)]
-                    [current-task      (task++)])
+    (parameterize ([current-custodian (majordomo.cust jarvis)]
+                   [current-task      new-task])
+      (thunk
+       (log-majordomo2-debug "~a entering task thunk" (thread-id))
        (match-define (and the-task (struct* task ([manager-ch manager-ch])))
-         (current-task))
+         new-task)
 
        ; worker
        (define (start-worker the-task)
@@ -576,6 +652,8 @@
 
          ; notify majordomo that a worker has finished and it's okay to start another one
          (async-channel-put control-ch (list 'stop (task.id (current-task)))))))))
+
+
   (cond [(equal? +inf.0 (majordomo.max-workers jarvis))
          (call-with-parameterization
           (or params (current-parameterization)) ; they can pass #f to mean 'use current one'
@@ -584,9 +662,10 @@
          (async-channel-put
           control-ch
           (list 'add
-                params
-                task-thunk))])
-
+                result-ch
+                (list (task.id new-task)
+                      params
+                      task-thunk)))])
   result-ch)
 
 ;;----------------------------------------------------------------------
