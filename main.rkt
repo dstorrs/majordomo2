@@ -336,7 +336,7 @@
                            #:sort-cache-keys?      [cache-keys?           #f]
                            #:post                  [post                  identity]
                            #:parameterization      [params                (current-parameterization)]
-                           #:with-singleton-id     [singleton-task-id           #f]
+                           #:with-singleton-id     [singleton-task-id     #f]
                            .                       args)
   (->* (majordomo? (unconstrained-domain-> any/c))
        (#:keepalive             (and/c real? (not/c negative?))
