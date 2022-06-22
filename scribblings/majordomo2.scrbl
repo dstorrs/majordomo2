@@ -329,7 +329,7 @@ When a task fails, either because it threw an error or simply timed out, it will
            ; entry.
            (task.data (sync (add-task jarvis mock-network-function
                                       #:parallel? #t
-                                      #:post (curry apply append)
+                                      #:post (lambda (tasks) (apply append (map task.data tasks)))
                                       "4.4.4.4" "8.8.8.8" "172.67.188.90" "104.21.48.235"))))
 
 
@@ -528,25 +528,25 @@ Tasks are created inside, and managed by, a @racket[majordomo] instance.
 
                        Arguments are as follows:
 
-                       @racketid[#:keepalive-time] The duration within which the worker must either terminate or notify the manager that it's still running.
+                       @racketid[keepalive-time] The duration within which the worker must either terminate or notify the manager that it's still running.
 
-                       @racketid[#:retries] The number of times that the manager should restart the worker before giving up.  (Note:  This counts @italic{retries}, not maximum attempts.  The maximum number of times your action will be started is retries + 1, with the +1 being the initial attempt.)
+                       @racketid[retries] The number of times that the manager should restart the worker before giving up.  (Note:  This counts @italic{retries}, not maximum attempts.  The maximum number of times your action will be started is retries + 1, with the +1 being the initial attempt.)
 
-                       @racketid[#:parallel?] Whether the action should be run in parallel. See @secref["parallel-processing"].
+                       @racketid[parallel?] Whether the action should be run in parallel. See @secref["parallel-processing"].
 
-                       @racketid[#:unwrap?] Whether the arguments should be used as-is or one layer of listing should be removed.  Saves you the trouble of currying in an @racket[apply]. See @secref["unwrapping"].
+                       @racketid[unwrap?] Whether the arguments should be used as-is or one layer of listing should be removed.  Saves you the trouble of currying in an @racket[apply]. See @secref["unwrapping"].
 
-                       @racketid[#:flatten-nested-tasks?] If your action procedure produces a task that contains tasks you can have the system automatically lift the subtasks out and combine their data into the top-level task so that you don't have to dig it out on the far end.  You will lose the id and status fields of the subtasks if you do this.  See @secref["flattening"].
+                       @racketid[flatten-nested-tasks?] If your action procedure produces a task that contains tasks you can have the system automatically lift the subtasks out and combine their data into the top-level task so that you don't have to dig it out on the far end.  You will lose the id and status fields of the subtasks if you do this.  See @secref["flattening"].
 
-                       @racketid[#:filter] Filter the data after flattening (if any) and before passing it to the preprocessing function.  See @secref["filtering"].   
+                       @racketid[filter] Filter the data after flattening (if any) and before passing it to the preprocessing function.  See @secref["filtering"].   
 
-                       @racketid[#:pre] Pre-processes the results of the action.  The default preprocessor is @racket[identity].  This happens after flattening and before sorting.
+                       @racketid[pre] Pre-processes the results of the action.  The default preprocessor is @racket[identity].  This happens after flattening and before sorting.
 
-                       @racketid[#:sort-op], @racketid[#:sort-key], @racketid[#:sort-cache-keys?] Whether and how to sort the results of the action.  They are passed as the (respectively) @racketid[less-than?], @racket[#:key extract-key] and @racket[#:cache-keys? cache-keys?] arguments to a @racket[sort] call.  Sorting happens after preprocessing and before postprocessing.
+                       @racketid[sort-op], @racketid[sort-key], @racketid[sort-cache-keys?] Whether and how to sort the results of the action.  They are passed as the (respectively) @racketid[less-than?], @racket[#:key extract-key] and @racket[#:cache-keys? cache-keys?] arguments to a @racket[sort] call.  Sorting happens after preprocessing and before postprocessing.
 
-                       @racketid[#:post] Postprocesses the results of the action immediately before returning them.  The default is @racket[identity].
+                       @racketid[post] Postprocesses the results of the action immediately before returning them.  The default is @racket[identity].
 
-                       Obviously, if the results of your function are not a list, either leave @racketid[#:sort-op] as @racket[#f] so that it doesn't try to sort and fail, or else use @racket[#:pre list] to make it a list before sorting is applied.
+                       Obviously, if the results of your function are not a list, either leave @racketid[sort-op] as @racket[#f] so that it doesn't try to sort and fail, or else use @racket[#:pre list] to make it a list before sorting is applied.
 
 Consolidating previous information, the pipeline goes:
 
