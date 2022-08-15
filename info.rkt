@@ -8,5 +8,5 @@
 (define version "1.1")
 (define pkg-authors '("David K. Storrs"))
 
-(define test-omit-paths '("test-main.rkt"))
+
 
